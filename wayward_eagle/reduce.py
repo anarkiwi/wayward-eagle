@@ -84,23 +84,24 @@ class Function(NamedTuple):
 
 
 def reduced(body, name, fn):
-    """``([(function name, parameters, items)], sections)`` of the statements ``body`` of C
+    """``([Piece], sections, status variables)`` of the statements ``body`` of C
     function ``name`` (:class:`Function` ``fn``), each rewrite lowering cognitive
     complexity: a function returning nothing cut into sections (:func:`sections`,
     ``NAME_K``, called in turn), each section's pieces (:func:`_pieces`) then."""
     parts = sections(body, fn.local) if fn.void else [(None, body)]
-    pieces = []
+    pieces, temps = [], set()
     for k, (lab, items) in enumerate(parts, 1):
         sec = name if len(parts) == 1 else f"{name}_{k}"
-        pieces += _pieces(sec, returning(items, lab) if lab else items, fn)
-    return pieces, len(parts)
+        got, more = _pieces(sec, returning(items, lab) if lab else items, fn)
+        pieces += got
+        temps |= more
+    return pieces, len(parts), temps
 
 
-def _pieces(sec, items, fn):
-    """The functions of section ``sec``: its tails (:func:`tails`, ``SECTION_LABEL``) when
-    it returns nothing, each flattened (:func:`flattened`), ended (:func:`guarded`) when it
-    returns nothing, and its nested blocks extracted while above :data:`THRESHOLD`
-    (:func:`extracted`, ``PIECE_xK``)."""
+def _chain(sec, items, fn):
+    """``[(function name, parameters, items)]`` of section ``sec``: its first statements and
+    its tails (:func:`tails`, ``SECTION_LABEL``) when it returns nothing, each goto to a
+    tail and the fall into the next one its call."""
     params = fn.params
 
     def call(t, ps):
@@ -114,46 +115,101 @@ def _pieces(sec, items, fn):
         body = calling(body, calls)
         if j < len(chain) and not ends_in_jump(body):
             body = [*body, calls[chain[j][0]]]
-        body = guarded(flattened(body)) if fn.void else flattened(body)
-        out += extracted(name, args, body, fn.local | set(params), fn.noreturn)
+        out.append((name, args, body))
     return out
 
 
-def _leaves(st, k, items, ctx):
-    """Whether jump ``st``, statement ``k`` of ``items``, leaves them (:func:`_escapes`,
-    ``ctx`` its ``(noreturn, loops, switches, labels)``)."""
-    noreturn, loops, switches, inside = ctx
+def _pieces(sec, items, fn):
+    """``([Piece], status variables)`` of section ``sec``: its chain (:func:`_chain`), each
+    function flattened (:func:`flattened`), ended (:func:`guarded`) when it returns nothing,
+    and its nested blocks extracted while above :data:`THRESHOLD` (:func:`extracted`,
+    ``PIECE_xK``)."""
+    out, temps = [], set()
+    local = fn._replace(local=fn.local | set(fn.params))
+    for name, args, body in _chain(sec, items, fn):
+        body = guarded(flattened(body)) if fn.void else flattened(body)
+        got, more = extracted(name, args, body, local, None if fn.void else STATUS)
+        out += got
+        temps |= more
+    return out, temps
+
+
+BREAK = ("j", "break;", frozenset())
+#: The jump each kind of exit from a block takes.
+JUMPS = {"return": RETURN, "break": BREAK, "continue": CONTINUE}
+
+
+class At(NamedTuple):
+    """Where a statement is in the block being judged: the loops and ``switch`` statements
+    around it inside the block, and which statements are calls that never return."""
+
+    noreturn: Callable
+    loops: int = 0
+    switches: int = 0
+
+    def into(self, st):
+        """Where the statements nested in ``st`` are."""
+        return At(
+            self.noreturn, self.loops + (st[0] == "loop"), self.switches + (st[0] == "switch")
+        )
+
+
+def _kind(st, k, items, at):
+    """The kind of exit jump ``st`` (statement ``k`` of ``items``) takes out of the block,
+    ``"stay"`` for none, None for a fall into the next case, which no extraction carries."""
     text = st[1]
-    return (
-        "fallthrough" in text
-        or (text.startswith("return") and not (k and noreturn(items[k - 1])))
-        or (text.startswith("goto ") and text[5:-1] not in inside)
-        or (text == "break;" and not loops + switches)
-        or (text == "continue;" and not loops)
-    )
+    if "fallthrough" in text:
+        return None
+    if text.startswith("return"):
+        return "stay" if k and at.noreturn(items[k - 1]) else "return"
+    if text == "break;" and not at.loops + at.switches:
+        return "break"
+    return "continue" if text == "continue;" and not at.loops else "stay"
 
 
-def _escapes(items, noreturn, loops=0, switches=0, inside=frozenset()):
-    """Whether control may leave ``items`` but by falling off their end: a return (not
-    right after a statement ``noreturn`` holds of, a call that never returns), a fall into
-    the next case, a ``break`` or ``continue`` of no loop or ``switch`` within them, a goto
-    to a label outside them."""
-    inside = inside or frozenset(labels(items))
-    ctx = (noreturn, loops, switches, inside)
+def _kinds(items, at):
+    """The kinds of exit control leaves ``items`` by other than their end (``return``,
+    ``break``, ``continue``), or None when it may fall into the next case."""
+    out = set()
     for k, st in enumerate(items):
         if st[0] == "j":
-            hit = _leaves(st, k, items, ctx)
-        elif st[0] == "loop":
-            hit = _escapes(st[4], noreturn, loops + 1, switches, inside)
-        elif st[0] == "switch":
-            hit = any(_escapes(b, noreturn, loops, switches + 1, inside) for _, b in st[3])
+            got = {_kind(st, k, items, at)}
         else:
-            hit = st[0] == "if" and any(
-                _escapes(a, noreturn, loops, switches, inside) for a in st[3:5]
-            )
-        if hit:
-            return True
-    return False
+            got = set()
+            for sub in children(st):
+                inner = _kinds(sub, at.into(st))
+                if inner is None:
+                    return None
+                got |= inner
+        if None in got:
+            return None
+        out |= got
+    return out - {"stay"}
+
+
+def _recode(items, codes, end, at):
+    """``items`` with each exit of a kind in ``codes`` returning its code, and each other
+    return (one after a call that never returns, never reached) ``end``."""
+
+    def f(k, st, items):
+        if st[0] != "j":
+            return st
+        kind = _kind(st, k, items, at)
+        if kind in codes:
+            return ("j", f"return {codes[kind]};", st[2])
+        return end if st[1].startswith("return") else st
+
+    out = []
+    for k, st in enumerate(items):
+        st = f(k, st, items)
+        if st[0] == "if":
+            st = (*st[:3], *(_recode(a, codes, end, at) for a in st[3:5]), *st[5:])
+        elif st[0] == "loop":
+            st = (*st[:4], _recode(st[4], codes, end, at.into(st)))
+        elif st[0] == "switch":
+            st = (*st[:3], [(lab, _recode(b, codes, end, at.into(st))) for lab, b in st[3]])
+        out.append(st)
+    return out
 
 
 def _blocks(items, depth=0):
@@ -188,36 +244,102 @@ def _swap(items, block, new):
     return [f(st) for st in items]
 
 
-def extracted(name, args, items, local, noreturn=never):
-    """``[(function name, parameters, items)]`` of function ``name`` (``args`` its
-    parameters) and the functions extracted from it: while its cognitive complexity is above
-    :data:`THRESHOLD`, the nested block whose statements save the most nesting moved to
-    depth 0 that control leaves only by its end (:func:`_escapes` with ``noreturn``), no
-    goto outside it enters, and sets no variable used outside it becomes ``NAME_xK`` of the
-    variables it reads that are used outside it, and its call; each extracted function in
+class Piece(NamedTuple):
+    """A function of the rewritten C: its name, parameters, statements and what it returns
+    (None nothing, :data:`STATUS` an exit code, else the variable it names)."""
+
+    name: str
+    args: list
+    items: list
+    ret: str | None = None
+
+
+#: What a function returning an exit code returns (:class:`Piece`).
+STATUS = "status"
+
+
+def _end(ret):
+    """The jump ending a function that returns ``ret`` (:class:`Piece`)."""
+    if ret is None:
+        return RETURN
+    return ("j", "return 0;" if ret == STATUS else f"return {ret};", frozenset())
+
+
+def _site(xname, call, refs, codes):
+    """``(call site, status variable)`` of extracted function ``xname`` returning exit
+    ``codes`` (``{kind: code}``): one test of the call for one exit, else the status in
+    ``NAME_k`` and a test per exit."""
+    if len(codes) == 1:
+        (kind,) = codes
+        return [("if", call, refs, [JUMPS[kind]], [], f"!{call}")], None
+    tmp = f"{xname}_k"
+    tests = [
+        ("if", f"{tmp} == {c}", frozenset({tmp}), [JUMPS[kind]], [], f"{tmp} != {c}")
+        for kind, c in codes.items()
+    ]
+    return [("a", tmp, call, refs), *tests], tmp
+
+
+def _extraction(xname, block, rest, fn):
+    """``(call site, piece, status variable)`` of extracting ``block`` to ``xname`` from a
+    function whose other statements are ``rest`` (:class:`Function` ``fn``), or None when it
+    cannot be (a goto outside enters it, it falls into the next case, it returns from a
+    function returning a value, or it both leaves early and sets a variable used after it,
+    or sets more than one): its exits (:func:`_kinds`) become a status it returns, the one
+    variable it sets that is used after it its value."""
+    kinds = _kinds(block, At(fn.noreturn))
+    outs = sorted({st[1] for st in walk(block) if st[0] == "a"} & names_in(rest) & fn.local)
+    if kinds is None or labels(block) & targets(rest) or ("return" in kinds and not fn.void):
+        return None
+    if (kinds and outs) or len(outs) > 1:
+        return None
+    inputs = sorted(names_in(block) & names_in(rest) & fn.local, key=order)
+    call, refs = f"{xname}({', '.join(inputs)})", frozenset(inputs)
+    if not kinds and not outs:
+        return [("s", f"{call};", refs)], Piece(xname, inputs, block), None
+    ret = outs[0] if outs else STATUS
+    codes = {kind: c for c, kind in enumerate(sorted(kinds), 1)}
+    body = _recode(block, codes, _end(ret), At(fn.noreturn))
+    body = body if ends_in_jump(body) else [*body, _end(ret)]
+    site, tmp = ([("a", ret, call, refs)], None) if outs else _site(xname, call, refs, codes)
+    return site, Piece(xname, inputs, body, ret), tmp
+
+
+def _best(name, items, fn):
+    """``(block, extraction)`` of the nested block of ``items`` whose extraction
+    (:func:`_extraction`) saves the most cognitive complexity, its call site counted, or
+    None when none saves any."""
+    best, gain = None, 0
+    for block, depth in _blocks(items):
+        got = _extraction(name, block, _swap(items, block, []), fn)
+        if got is not None:
+            g = cost(block, depth) - cost(got[1].items) - cost(got[0], depth)
+            if g > gain:
+                best, gain = (block, got), g
+    return best
+
+
+def extracted(name, args, items, fn, ret=None):
+    """``([Piece], status variables)`` of function ``name`` (``args`` its parameters, ``ret``
+    what it returns, :class:`Function` ``fn``) and the functions extracted from it: while its
+    cognitive complexity is above :data:`THRESHOLD`, the block extracting which saves the
+    most (:func:`_best`) becomes ``NAME_xK`` and its call site; each extracted function in
     turn."""
-    out, k = [], 0
+    out, temps, k = [], set(), 0
+    fn = fn._replace(void=ret is None)
     while cost(items) > THRESHOLD:
-        best, gain = None, 0
-        for block, depth in _blocks(items):
-            g = cost(block, depth) - cost(block)
-            if g <= gain or _escapes(block, noreturn):
-                continue
-            rest = _swap(items, block, [])
-            if labels(block) & targets(rest):
-                continue
-            if {st[1] for st in walk(block) if st[0] == "a"} & names_in(rest) & local:
-                continue
-            best, gain = block, g
+        best = _best(f"{name}_x{k + 1}", items, fn)
         if best is None:
             break
         k += 1
-        xname, inputs = f"{name}_x{k}", sorted(
-            names_in(best) & names_in(_swap(items, best, [])) & local, key=order
+        block, (site, piece, tmp) = best
+        items = _swap(items, block, site)
+        inner, more = extracted(
+            piece.name, piece.args, ending(piece.items, _end(piece.ret)), fn, piece.ret
         )
-        items = _swap(items, best, [("s", f"{xname}({', '.join(inputs)});", frozenset(inputs))])
-        out += extracted(xname, inputs, guarded(best), local, noreturn)
-    return [(name, args, items), *out]
+        out += inner
+        temps |= more | ({tmp} - {None})
+    return [Piece(name, args, items, ret), *out], temps
 
 
 def _splice(items, f):

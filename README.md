@@ -7,9 +7,9 @@ trees, keeping what each function does. Each rewrite is made only where it lower
 ```python
 from wayward_eagle import Function, reduced
 
-pieces, sections = reduced(body, "f", Function(params=["a"], local={"v1", "v2"}, void=True))
-for name, args, items in pieces:
-    ...  # print each function: its name, parameters and statements
+pieces, sections, temps = reduced(body, "f", Function(params=["a"], local={"v1", "v2"}, void=True))
+for piece in pieces:
+    ...  # print each function: piece.name, piece.args, piece.items, piece.ret
 ```
 
 - [Statement trees](docs/trees.md): the input and output.

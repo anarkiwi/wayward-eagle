@@ -2,6 +2,7 @@
 
 from wayward_eagle import (
     Function,
+    Piece,
     assigned_first,
     reduced,
     CONTINUE,
@@ -173,33 +174,43 @@ def test_a_function_above_the_threshold_has_its_deepest_saving_block_extracted()
     """Above :data:`THRESHOLD`, the nested block that saves the most moves to a function of
     the variables it reads that are used outside it; under it nothing moves."""
     items = [a("v1", "p"), iff("p", deep(6, s("w(v1);", "v1")))]
-    got = extracted("f", ["p"], items, {"v1", "p"})
-    assert cost(items) > THRESHOLD >= cost(got[0][2]) and got[0][1] == ["p"]
-    assert sum(cost(x) for _, _, x in got) < cost(items)
-    assert [(n, args) for n, args, _ in got[1:]] == [("f_x1", ["v1"])]
-    assert ("s", "f_x1(v1);", frozenset({"v1"})) in walk(got[0][2])
+    got, temps = extracted("f", ["p"], items, Function(["p"], {"v1", "p"}, True))
+    assert cost(items) > THRESHOLD >= cost(got[0].items) and got[0].args == ["p"] and not temps
+    assert sum(cost(x.items) for x in got) < cost(items)
+    assert [(x.name, x.args, x.ret) for x in got[1:]] == [("f_x1", ["v1"], None)]
+    assert ("s", "f_x1(v1);", frozenset({"v1"})) in walk(got[0].items)
     small = [iff("p", deep(2, s("x();")))]
-    assert extracted("g", [], small, set()) == [("g", [], small)]
+    assert extracted("g", [], small, Function([], set(), True)) == ([Piece("g", [], small)], set())
 
 
-def test_a_block_control_leaves_early_or_a_goto_enters_stays():
-    """A block a return (but one after a call ``noreturn`` names), a ``break`` of an
-    enclosing loop or a fall into the next case leaves, or a goto from outside enters, or
-    that sets a variable used outside it, is not extracted."""
-    for leave in (
-        RETURN,
-        ("j", "break;", frozenset()),
-        ("j", "__attribute__((fallthrough));", frozenset()),
-    ):
-        items = [iff("p", deep(6, s("x();"), leave))]
-        assert len(extracted("f", [], items, set())) == 1
-    trapped = [iff("p", deep(6, s("trap(1);"), RETURN))]
-    assert len(extracted("f", [], trapped, set())) == 1
-    assert len(extracted("f", [], trapped, set(), traps)) == 2
+def test_a_block_leaving_early_returns_its_exit():
+    """A block leaving by one kind of exit returns whether it took it, its call tested; by
+    several, a status its call stores and tests per exit; a return after a call that never
+    returns is no exit."""
+    fn = Function([], set(), True, traps)
+    one, _ = extracted("f", [], [iff("p", deep(6, s("x();"), RETURN))], fn)
+    assert one[1].ret == "status" and ("j", "return 1;", frozenset()) in walk(one[1].items)
+    assert ("if", "f_x1()", frozenset(), [RETURN], [], "!f_x1()") in walk(one[0].items)
+    brk = ("j", "break;", frozenset())
+    two = [("loop", "for", "", frozenset(), [iff("p", deep(6, iff("q", [brk], [RETURN])))])]
+    got, temps = extracted("f", [], two, fn)
+    assert temps == {"f_x1_k"} and got[1].ret == "status"
+    trapped, _ = extracted("f", [], [iff("p", deep(6, s("trap(1);"), RETURN))], fn)
+    assert trapped[1].ret is None
+
+
+def test_a_block_setting_a_variable_used_after_returns_it():
+    """A block setting one variable used after it returns it, its call assigning it; one
+    that also leaves early, falls into the next case, or that a goto outside enters, stays."""
+    fn = Function([], {"v1"}, True)
+    got, _ = extracted("f", [], [iff("p", deep(6, a("v1", "p"))), s("w(v1);", "v1")], fn)
+    assert got[1].ret == "v1" and got[1].items[-1] == ("j", "return v1;", frozenset())
+    assert ("a", "v1", "f_x1(v1)", frozenset({"v1"})) in walk(got[0].items)
+    both = [iff("p", deep(6, a("v1", "p"), RETURN)), s("w(v1);", "v1")]
+    fall = [iff("p", deep(6, s("x();"), ("j", "__attribute__((fallthrough));", frozenset())))]
     entered = [iff("p", deep(6, label("L1"), s("x();"))), goto("L1")]
-    assert len(extracted("f", [], entered, set())) == 1
-    sets = [iff("p", deep(6, a("v1", "p"))), s("w(v1);", "v1")]
-    assert len(extracted("f", [], sets, {"v1"})) == 1
+    for items in (both, fall, entered):
+        assert len(extracted("f", [], items, fn)[0]) == 1
 
 
 def test_a_function_reduces_to_sections_tails_and_extractions():
@@ -218,14 +229,13 @@ def test_a_function_reduces_to_sections_tails_and_extractions():
         label("L3"),
         s("z(v2);", "v2"),
     ]
-    pieces, sections_ = reduced(body, "f", Function(["p"], {"v1", "v2"}, True))
-    assert sections_ == 3
-    names = [n for n, _, _ in pieces]
-    assert names == ["f_1", "f_2", "f_3", "f_3_L3"]
-    tail = dict((n, (args, items)) for n, args, items in pieces)["f_3_L3"]
+    pieces, sections_, temps = reduced(body, "f", Function(["p"], {"v1", "v2"}, True))
+    assert sections_ == 3 and not temps
+    assert [x.name for x in pieces] == ["f_1", "f_2", "f_3", "f_3_L3"]
+    tail = {x.name: (x.args, x.items) for x in pieces}["f_3_L3"]
     assert tail == (["p", "v2"], [s("z(v2);", "v2")])
-    kept, one = reduced([RETURN], "g", Function([], set(), False))
-    assert one == 1 and kept == [("g", [], [RETURN])]
+    kept, one, _ = reduced([RETURN], "g", Function([], set(), False))
+    assert one == 1 and kept == [Piece("g", [], [RETURN], "status")]
 
 
 def test_assignment_comes_before_every_read_on_every_path():
