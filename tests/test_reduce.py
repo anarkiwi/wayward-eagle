@@ -189,14 +189,14 @@ def test_a_block_leaving_early_returns_its_exit():
     several, a status its call stores and tests per exit; a return after a call that never
     returns is no exit."""
     fn = Function([], set(), True, traps)
-    one, _ = extracted("f", [], [iff("p", deep(6, s("x();"), RETURN))], fn)
+    one, _ = extracted("f", [], [iff("p", deep(6, s("x();"), RETURN)), s("y();")], fn)
     assert one[1].ret == "status" and ("j", "return 1;", frozenset()) in walk(one[1].items)
     assert ("if", "f_x1()", frozenset(), [RETURN], [], "!f_x1()") in walk(one[0].items)
     brk = ("j", "break;", frozenset())
     two = [("loop", "for", "", frozenset(), [iff("p", deep(6, iff("q", [brk], [RETURN])))])]
     got, temps = extracted("f", [], two, fn)
     assert temps == {"f_x1_k"} and got[1].ret == "status"
-    trapped, _ = extracted("f", [], [iff("p", deep(6, s("trap(1);"), RETURN))], fn)
+    trapped, _ = extracted("f", [], [iff("p", deep(6, s("trap(1);"), RETURN)), s("y();")], fn)
     assert trapped[1].ret is None
 
 
@@ -278,3 +278,21 @@ def test_a_block_reading_a_parameter_takes_it():
     fn = Function(["v1"], {"v1"}, True)
     got, _ = extracted("f", ["v1"], [iff("p", deep(6, s("w(v1);", "v1")))], fn)
     assert got[1].args == ["v1"]
+
+
+def test_an_exit_going_where_the_block_ends_is_its_end():
+    """A ``continue`` out of a whole loop body, a ``break`` out of a case body and a
+    ``return`` from the last arm of a function returning nothing go where falling off the
+    block does, so the extracted block ends there and its call is untested."""
+    fn = Function([], set(), True)
+    body = deep(6, iff("q", [CONTINUE]), s("x();"))
+    got, temps = extracted("f", [], [("loop", "for", "", frozenset(), body)], fn)
+    assert got[1].ret is None and not temps
+    assert ("s", "f_x1();", frozenset()) in walk(got[0].items)
+    brk = ("j", "break;", frozenset())
+    case = [("switch", "p", frozenset(), [(["1"], deep(6, iff("q", [brk]), s("x();")))])]
+    assert extracted("f", [], case, fn)[0][1].ret is None
+    last = [s("y();"), iff("p", deep(6, iff("q", [RETURN]), s("x();")))]
+    assert extracted("f", [], last, fn)[0][1].ret is None
+    early = [iff("p", deep(6, iff("q", [RETURN]), s("x();"))), s("y();")]
+    assert extracted("f", [], early, fn)[0][1].ret == "status"

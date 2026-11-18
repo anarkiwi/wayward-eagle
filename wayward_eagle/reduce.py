@@ -188,15 +188,15 @@ def _kinds(items, at):
 
 
 def _recode(items, codes, end, at):
-    """``items`` with each exit of a kind in ``codes`` returning its code, and each other
-    return (one after a call that never returns, never reached) ``end``."""
+    """``items`` with each exit of a kind in ``codes`` returning its code (``end`` for None),
+    and each other return (one after a call that never returns, never reached) ``end``."""
 
     def f(k, st, items):
         if st[0] != "j":
             return st
         kind = _kind(st, k, items, at)
         if kind in codes:
-            return ("j", f"return {codes[kind]};", st[2])
+            return end if codes[kind] is None else ("j", f"return {codes[kind]};", st[2])
         return end if st[1].startswith("return") else st
 
     out = []
@@ -212,13 +212,21 @@ def _recode(items, codes, end, at):
     return out
 
 
-def _blocks(items, depth=0):
-    """``(block, depth)`` of each statement list nested in ``items``: arms, loop and case
-    bodies, at the nesting of their statements."""
-    for st in items:
+def _blocks(items, depth=0, same=frozenset()):
+    """``(block, depth, same)`` of each statement list nested in ``items``: arms, loop and
+    case bodies, at the nesting of their statements, ``same`` the kinds of exit that go where
+    falling off the block's end does (``continue`` from a loop body, ``break`` from a case
+    body, from an arm ending ``items`` those of ``items``)."""
+    for k, st in enumerate(items):
+        if st[0] == "loop":
+            inner = frozenset({"continue"})
+        elif st[0] == "switch":
+            inner = frozenset({"break"})
+        else:
+            inner = same if k == len(items) - 1 else frozenset()
         for sub in children(st):
-            yield sub, depth + 1
-            yield from _blocks(sub, depth + 1)
+            yield sub, depth + 1, inner
+            yield from _blocks(sub, depth + 1, inner)
 
 
 def _swap(items, block, new):
@@ -280,28 +288,31 @@ def _site(xname, call, refs, codes):
     return [("a", tmp, call, refs), *tests], tmp
 
 
-def _extraction(xname, block, rest, fn):
+def _extraction(xname, block, rest, fn, same=frozenset()):
     """``(call site, piece, status variable)`` of extracting ``block`` to ``xname`` from a
     function whose other statements are ``rest`` (:class:`Function` ``fn``), or None when it
     cannot be (a goto crosses its edge, it falls into the next case, it returns from a
     function returning a value, or it both leaves early and sets a variable used after it,
     or sets more than one): its exits (:func:`_kinds`) become a status it returns, the one
-    variable it sets that is used after it its value."""
+    variable it sets that is used after it its value; an exit of a kind in ``same`` goes
+    where its end does (:func:`_blocks`), so is its end."""
     kinds = _kinds(block, At(fn.noreturn))
     outs = sorted(writes(block) & names_in(rest) & fn.local)
-    crosses = labels(block) & targets(rest) or targets(block) - labels(block)
-    if kinds is None or crosses or ("return" in kinds and not fn.void):
+    if kinds is None or labels(block) & targets(rest) or targets(block) - labels(block):
+        return None
+    kinds -= same
+    if "return" in kinds and not fn.void:
         return None
     if (kinds and outs) or len(outs) > 1:
         return None
     inputs = sorted(names_in(block) & (names_in(rest) | set(fn.params)) & fn.local, key=order)
     call, refs = f"{xname}({', '.join(inputs)})", frozenset(inputs)
     if not kinds and not outs:
-        body = _recode(block, {}, RETURN, At(fn.noreturn))
+        body = _recode(block, dict.fromkeys(same), RETURN, At(fn.noreturn))
         return [("s", f"{call};", refs)], Piece(xname, inputs, body), None
     ret = outs[0] if outs else STATUS
     codes = {kind: c for c, kind in enumerate(sorted(kinds), 1)}
-    body = _recode(block, codes, _end(ret), At(fn.noreturn))
+    body = _recode(block, {**dict.fromkeys(same), **codes}, _end(ret), At(fn.noreturn))
     body = body if ends_in_jump(body) else [*body, _end(ret)]
     site, tmp = ([("a", ret, call, refs)], None) if outs else _site(xname, call, refs, codes)
     return site, Piece(xname, inputs, body, ret), tmp
@@ -312,8 +323,8 @@ def _best(name, items, fn):
     (:func:`_extraction`) saves the most cognitive complexity, its call site counted, or
     None when none saves any."""
     best, gain = None, 0
-    for block, depth in _blocks(items):
-        got = _extraction(name, block, _swap(items, block, []), fn)
+    for block, depth, same in _blocks(items, 0, frozenset({"return"} if fn.void else ())):
+        got = _extraction(name, block, _swap(items, block, []), fn, same)
         if got is not None:
             g = cost(block, depth) - cost(got[1].items) - cost(got[0], depth)
             if g > gain:
