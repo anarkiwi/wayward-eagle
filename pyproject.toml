@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wayward-eagle"
-version = "0.3.0"
+version = "0.4.0"
 description = "Lower the cognitive complexity of C function bodies, keeping what they do, and census C readability defects"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,7 +16,14 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
 ]
-dependencies = ["clang-tidy==23.1.4", "libclang==18.1.1", "tqdm>=4"]
+dependencies = [
+    "clang-format==23.1.5",
+    "clang-tidy==23.1.4",
+    "orjson==3.13.0",
+    "pycparser==3.12",
+    "tqdm>=4",
+    "ziglang==0.17.1",
+]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-xdist", "pytest-cov", "black", "pylint"]
@@ -31,7 +38,7 @@ wayward-census = "wayward_eagle.census:adapter"
 Repository = "https://github.com/anarkiwi/wayward-eagle"
 
 [tool.setuptools]
-packages = ["wayward_eagle"]
+packages = ["wayward_eagle", "wayward_eagle.c"]
 
 [tool.black]
 line-length = 100
