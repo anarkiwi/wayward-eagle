@@ -1,4 +1,3 @@
-# pylint: disable=duplicate-code
 """Rewrites of a C function (a ``c_ast.FuncDef``) that lower its cognitive complexity and keep
 what it does: sections, tails, early exits, flattened arms and extracted blocks
 (docs/rewrites.md), over the statement lists of :mod:`wayward_eagle.c.stmt`."""

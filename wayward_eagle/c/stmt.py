@@ -1,4 +1,3 @@
-# pylint: disable=duplicate-code
 """A C function body as nested statement lists of ``c_ast`` nodes, and what they read, write
 and jump to: the form :mod:`wayward_eagle.c.reduce` rewrites. Every nested body is a
 ``Compound`` whose ``block_items`` is the list, labels hold an empty statement, and a

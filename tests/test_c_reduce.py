@@ -1,5 +1,4 @@
-"""The rewrites over ``c_ast``: each test of test_reduce.py's tuple rewrites, on C parsed by
-clang, asserting the same result; then whole functions and files."""
+"""The rewrites over ``c_ast``, on C parsed by clang; then whole functions and files."""
 
 import pytest
 from pycparser import c_ast

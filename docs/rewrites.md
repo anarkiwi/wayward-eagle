@@ -1,7 +1,14 @@
 # Rewrites
 
+`wayward_eagle.c.reduce` rewrites a `c_ast.FuncDef`: `reduce_function(fd, noreturn, status)`
+returns `[FuncDef]`, each piece `static`, the original last (`reduce_unit` and
+`wayward-eagle reduce` do this for every function of a file; see
+[the C layer](c.md#reducing)).
+
 `cost(items, depth)` counts SonarSource's rules: an `if`, loop or `switch` one plus its depth,
-an `else if`, an `else` and a `goto` one. `reduced` returns the functions (`Piece`: name, parameters, statements, and what each returns: nothing, `STATUS` an exit code, or a variable), the number of sections, and the status variables it added. It applies, in order:
+an `else if`, an `else` and a `goto` one. `reduced` returns the functions (`Piece`: name,
+parameters, statements, and what each returns: nothing, `STATUS` an exit code, or a
+variable), the number of sections, and the status variables it added. It applies, in order:
 
 | Rewrite | Applies to | Result |
 |---|---|---|
@@ -13,15 +20,9 @@ an `else if`, an `else` and a `goto` one. `reduced` returns the functions (`Piec
 
 Every rewrite lowers the cost, so each terminates.
 
-The tuple API above (`reduced`, `Function`, `Piece`, [statement trees](trees.md)) remains for
-deity-informant until it passes `c_ast`.
+## Preparing and finishing
 
-## Over `c_ast`
-
-`wayward_eagle.c.reduce` applies the same rewrites to a `c_ast.FuncDef`:
-`reduce_function(fd, noreturn, status)` returns `[FuncDef]`, each piece `static`, the
-original last (`reduce_unit` and `wayward-eagle reduce` do this for every function of a file;
-see [the C layer](c.md#reducing)). A whole function is prepared and finished thus:
+A whole function is prepared and finished thus:
 
 - each local declaration becomes the assignment of its initializer, its type kept; each piece
   declares the variables it uses in the innermost statement list that sets them before each
