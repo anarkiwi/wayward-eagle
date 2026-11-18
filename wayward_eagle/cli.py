@@ -1,9 +1,13 @@
-"""``wayward-eagle`` command line: ``census FILE.c... [--json] [-I DIR]``."""
+"""``wayward-eagle`` command line: ``census FILE.c... [--json] [-I DIR]`` and
+``reduce FILE.c [-o OUT.c] [-I DIR] [--status-type T]``."""
 
 import argparse
 import json
 import sys
 
+from pycparser import c_ast
+
+from .c import load, reduce_unit
 from .census import census_all
 
 
@@ -16,7 +20,21 @@ def main(argv=None):
     cen.add_argument("-I", dest="include", action="append", default=[], metavar="DIR")
     cen.add_argument("-j", "--jobs", type=int, default=None)
     cen.add_argument("--json", action="store_true", help="sites, counts and complexity as JSON")
+    red = sub.add_parser("reduce", help="each function of a C file reduced, as C")
+    red.add_argument("file", metavar="FILE.c")
+    red.add_argument("-o", dest="out", default=None, metavar="OUT.c")
+    red.add_argument("-I", dest="include", action="append", default=[], metavar="DIR")
+    red.add_argument("--status-type", default="int", help="type of exit codes (default int)")
     args = ap.parse_args(argv)
+    if args.command == "reduce":
+        status = c_ast.TypeDecl(None, [], None, c_ast.IdentifierType([args.status_type]))
+        text = reduce_unit(load(args.file, args.include), status)
+        if args.out is None:
+            sys.stdout.write(text)
+        else:
+            with open(args.out, "w", encoding="utf-8") as f:
+                f.write(text)
+        return 0
     reports = census_all(args.files, args.include, args.jobs)
     if args.json:
         out = {

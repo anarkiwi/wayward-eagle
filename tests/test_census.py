@@ -333,6 +333,20 @@ def test_duplicate_code_ignores_names_of_its_own_locals(tmp_path):
     assert len(sites(tmp_path, body, (), "duplicate-code")) == 1
 
 
+def test_duplicate_code_tells_literals_in_header_macros_apart(tmp_path):
+    """Statements alike but for constants their header's macros spell are no duplicates."""
+    (tmp_path / "t.h").write_text(
+        "".join(f"#define R{k} (b + {k})\n" for k in range(4)), encoding="utf-8"
+    )
+    body = (
+        '#include "t.h"\nuint8_t b[9];\n'
+        "void f(void) { R0[0] = 0; R1[0] = 0; R2[0] = 0; R3[0] = 0; }"
+    )
+    assert not sites(tmp_path, body, (f"-I{tmp_path}",), "duplicate-code")
+    same = body.replace("R2", "R0").replace("R3", "R1")
+    assert len(sites(tmp_path, same, (f"-I{tmp_path}",), "duplicate-code")) == 1
+
+
 def test_goto_names_its_label(tmp_path):
     """A goto's detail is its label."""
     (site,) = sites(tmp_path, "void f(void) { goto out; out:; }", (), "goto")
