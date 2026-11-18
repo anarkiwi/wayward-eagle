@@ -11,7 +11,7 @@ from typing import Callable, NamedTuple
 from pycparser import c_ast
 
 from . import query as q
-from .flow import Graph, propagated, reachable, unstored
+from .listflow import Graph, propagated, reachable, unstored
 from .refine import Rotation, refined, trimmed
 from .stmt import (
     LABELS,

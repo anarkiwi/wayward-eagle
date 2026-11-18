@@ -137,12 +137,12 @@ def test_a_counter_that_wraps_to_its_start_is_widened(tmp_path):
 
 def test_a_counter_read_after_the_loop_gets_its_last_value(tmp_path):
     """The head form leaves the counter one step further; when it is read after the loop
-    and nothing else leaves it, its last value is stored after it."""
+    and nothing else leaves it, its last value is stored after it (here propagated)."""
     got = behaves(
         tmp_path,
         "void f(void) { uint8_t v = 2; for (;;) { w(v); if (v == 0) break; v = v - 1; } w(v); }",
     )
-    assert "for (v = 2; v != 0xFF; v = v - 1) { w(v); } v = 0; w(v);" in body(got)
+    assert "for (uint8_t v = 2; v != 0xFF; v = v - 1) { w(v); } w(0); }" in body(got)
 
 
 def test_loops_that_do_not_rotate_stay(cc):
@@ -175,10 +175,10 @@ def test_statements_leading_every_arm_move_before_it(tmp_path):
     read only the function's own variables, and it stores none they read."""
     got = behaves(
         tmp_path,
-        "void f(int a) { int v1; if (a == 1) { v1 = 3; w(v1); } else { v1 = 3; w(v1 + 1); } }",
+        "void f(int a) { int v1; if (a == 1) { v1 = q; w(v1); } else { v1 = q; w(v1 + 1); } }",
         "f(p)",
     )
-    assert "int v1 = 3; if (a != 1) { w(v1 + 1); return; } w(v1);" in " ".join(got.split())
+    assert "int v1 = q; if (a != 1) { w(v1 + 1); return; } w(v1);" in " ".join(got.split())
 
 
 def test_switch_arms_ending_alike_end_after_it(tmp_path):
@@ -234,3 +234,36 @@ def test_types_of_counted_loops(cc):
     got = refine.Rotation(types)(items)
     assert cc.same(got, "for (v1 = 0; v1 <= 3; v1 = v1 + 1) { w(v1); }")
     assert stmt.cost(got) == stmt.cost(items) - 2
+
+
+def test_a_loop_whose_tail_always_leaves_is_a_loop_then_its_tail(tmp_path):
+    """``for (;;) { A; if (c) { S; continue; } T }`` with ``T`` always leaving is the loop
+    ``{ A; if (!c) break; S }`` and ``T`` after it, its ``break`` falling out; here the
+    loop then counts ``v`` down from 1."""
+    got = behaves(
+        tmp_path,
+        "void f(void) { uint8_t v = 1; for (;;) { x(); if (v) { v = v - 1; continue; } y();"
+        " if (p > 1) { w(p); break; } return; } z(); }",
+    )
+    assert (
+        "for (uint8_t v = 1; v != 0xFF; v = v - 1) { x(); } y(); if (p <= 1) { return; } w(p);"
+        " z(); }" in body(got)
+    )
+
+
+def test_loops_that_do_not_sequence_stay(cc):
+    """No sequencing when a ``break`` precedes the tail, the tail may continue or fall
+    through, or both arms of an ``if`` before its end break."""
+    for src in (
+        "for (;;) { if (q) break; x(); if (p) { continue; } return; }",
+        "for (;;) { x(); if (p) { continue; } y(); }",
+        "for (;;) { x(); if (p) { continue; } if (q) { break; } else { break; } return; }",
+    ):
+        (st,) = cc.items(src)
+        assert refine.sequenced(st) is None, src
+    (st,) = cc.items("for (;;) { x(); if (p) { continue; } if (q) { y(); } break; }")
+    assert cc.same(refine.sequenced(st), "for (;;) { x(); if (!p) break; } if (q) { y(); }")
+    (st,) = cc.items("for (;;) { x(); if (p) { continue; } if (q) { continue; } return; }")
+    assert cc.same(
+        refine.sequenced(st), "for (;;) { x(); if (p) { continue; } if (!q) break; } return;"
+    )

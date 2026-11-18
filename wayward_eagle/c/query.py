@@ -112,7 +112,8 @@ def replaced(n, f):
 
 
 def renamed(e, mapping):
-    """Expression ``e`` reading variable ``mapping[v]`` wherever it reads ``v``."""
+    """Expression ``e`` reading ``mapping[v]`` (a variable's name or an expression) wherever
+    it reads variable ``v``."""
     skip = {
         id(x.lvalue if isinstance(x, c_ast.Assignment) else x.name)
         for x in walk(e)
@@ -121,7 +122,8 @@ def renamed(e, mapping):
 
     def f(x):
         if isinstance(x, c_ast.ID) and id(x) not in skip and x.name in mapping:
-            return c_ast.ID(mapping[x.name], x.coord)
+            got = mapping[x.name]
+            return c_ast.ID(got, x.coord) if isinstance(got, str) else got
         return None
 
     return replaced(e, f)

@@ -180,6 +180,14 @@ def names_in(items):
     return out
 
 
+def reads_in(items):
+    """Every variable ``items`` read, nested statements included."""
+    out = set()
+    for st in items:
+        out |= _tree(st)[0]
+    return out
+
+
 def writes(items):
     """Every variable ``items`` set, in an assignment, increment or decrement anywhere in
     them (a loop's condition, a comma expression) included."""

@@ -3,7 +3,7 @@
 from pycparser import c_ast
 
 from conftest import LOCAL, deep
-from wayward_eagle.c import flow, front, printer as render, stmt
+from wayward_eagle.c import listflow as flow, front, printer as render, stmt
 from wayward_eagle.c import reduce as r
 
 
@@ -216,6 +216,7 @@ def test_writes_include_assignments_inside_expressions(cc):
         " if (v4 == 1 && v5 <= 2) { w(v6 >= 1); } v4++; v5 += 1;"
     )
     assert stmt.writes(items) == {"v1", "v2", "v3", "v4", "v5"}
+    assert stmt.reads_in(items) == {"p", "v1", "v2", "v4", "v5", "v6"}
     fn = r.Function([], LOCAL, True)
     got, _ = r.extracted(
         "f",
@@ -335,12 +336,6 @@ def test_declare_places_each_local_where_it_is_set(cc):
     )
     got = cc.text(r.declare(items, types))
     assert "if (p) { int v1 = p;" in got and got.startswith("{ int v2;") and "int v3 = 3;" in got
-
-
-def test_unstored_drops_dead_pure_stores_to_locals_only(cc):
-    """A pure value stored to a local nothing reads is dropped; a global's store stays."""
-    items = cc.items("v1 = 0; p = 0; v2 = g(); w(v3);")
-    assert cc.same(r.unstored(items, LOCAL), "p = 0; v2 = g(); w(v3);")
 
 
 def test_negation_turns_comparisons_round(cc):

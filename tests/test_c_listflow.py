@@ -4,7 +4,7 @@ and the rewrites they justify."""
 from pycparser import c_ast
 
 from conftest import LOCAL
-from wayward_eagle.c import flow, stmt
+from wayward_eagle.c import listflow as flow, stmt
 
 INT = c_ast.TypeDecl(None, [], None, c_ast.IdentifierType(["int"]))
 TYPES = {v: INT for v in LOCAL}
@@ -66,7 +66,8 @@ def test_copies_are_available_until_either_side_is_stored(cc):
 
 def test_copies_propagate_when_every_use_has_them(cc):
     """Each read of a copy ``v = u`` reads ``u`` when the copy is available at every read it
-    reaches and both are of one type; the copy is then dead and goes."""
+    reaches and both are of one type, or ``u`` is a constant whose literal reads the same
+    (not for an ``unsigned``, which a 16-bit ``int`` does not promote); the copy then goes."""
     got = flow.propagated(cc.items("v1 = p; v2 = v1; w(v2); w(v2 + 1);"), TYPES)
     assert cc.same(flow.unstored(got, LOCAL), "v1 = p; w(v1); w(v1 + 1);")
     ret = flow.propagated(cc.items("v2 = q; v1 = v2; return v1;", "int f(void)"), TYPES)
@@ -75,9 +76,15 @@ def test_copies_propagate_when_every_use_has_them(cc):
         "v2 = v1; v1 = 0; w(v2);",
         "v2 = v1; w(v2); if (p) { v2 = 3; } w(v2);",
         "v2 = v1; v2 += 1; w(v2);",
+        "v2 = v1; if ((v2 = p, v2 > 1)) { w(v2); }",
     ):
         items = cc.items(src)
         assert cc.text(flow.propagated(items, TYPES)) == cc.text(items), src
+    consts = flow.propagated(cc.items("v1 = 0x81; w(v1); v2 = -1; w(v2);"), TYPES)
+    assert cc.same(flow.unstored(consts, LOCAL), "w(0x81); w(-1);")
+    wide = {"v1": c_ast.TypeDecl(None, [], None, c_ast.IdentifierType(["unsigned"]))}
+    items = cc.items("v1 = 1; w(v1 - 2);")
+    assert cc.text(flow.propagated(items, wide)) == cc.text(items)
     narrow = {**TYPES, "v2": c_ast.TypeDecl(None, [], None, c_ast.IdentifierType(["char"]))}
     items = cc.items("v2 = v1; w(v2);")
     assert cc.text(flow.propagated(items, narrow)) == cc.text(items)
@@ -85,9 +92,9 @@ def test_copies_propagate_when_every_use_has_them(cc):
 
 def test_dead_stores_of_pure_values_go(cc):
     """A store of a value of variables and constants to a local dead after it goes, a chain
-    of them in turn; a store of a call's value, or to a global, stays."""
+    of them in turn; of a call's value it is the call; a store to a global stays."""
     got = flow.unstored(cc.items("v1 = p; v2 = v1; v1 = 3; w(v1); v3 = g(); p = 1;"), LOCAL)
-    assert cc.same(got, "v1 = 3; w(v1); v3 = g(); p = 1;")
+    assert cc.same(got, "v1 = 3; w(v1); g(); p = 1;")
     looped = cc.items("v1 = 0; while (p) { w(v1); v1 = v1 + 1; }")
     assert cc.text(flow.unstored(looped, LOCAL)) == cc.text(looped)
 

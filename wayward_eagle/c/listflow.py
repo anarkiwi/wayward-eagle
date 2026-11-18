@@ -7,7 +7,19 @@ from __future__ import annotations
 from pycparser import c_ast
 
 from . import query as q
-from .stmt import arms, block, children, dropped, heads, is_fallthrough, pure, reheaded, remap
+from .ints import MODELS, Int, constant, promoted, type_of, value
+from .stmt import (
+    arms,
+    block,
+    children,
+    dropped,
+    heads,
+    is_fallthrough,
+    pure,
+    rebuild,
+    reheaded,
+    remap,
+)
 
 
 def _never(_st):
@@ -25,16 +37,27 @@ def killed(e):
 
 
 def copy_of(e):
-    """``(v, u)`` when expression ``e`` is the copy ``v = u`` of one variable to another."""
-    if (
-        isinstance(e, c_ast.Assignment)
-        and e.op == "="
-        and isinstance(e.lvalue, c_ast.ID)
-        and isinstance(e.rvalue, c_ast.ID)
-        and e.lvalue.name != e.rvalue.name
-    ):
-        return e.lvalue.name, e.rvalue.name
-    return None
+    """``(v, u)`` when expression ``e`` is the copy ``v = u`` of a variable ``u`` (a name)
+    or of an integer constant ``u`` (its value, the same with either ``int``) to ``v``."""
+    if not (isinstance(e, c_ast.Assignment) and e.op == "=" and isinstance(e.lvalue, c_ast.ID)):
+        return None
+    v, rhs = e.lvalue.name, e.rvalue
+    if isinstance(rhs, c_ast.ID):
+        return (v, rhs.name) if rhs.name != v else None
+    if q.reads(rhs):
+        return None
+    got = {x and x[0] for x in (value(rhs, {}, b) for b in MODELS)}
+    return (v, got.pop()) if len(got) == 1 and None not in got else None
+
+
+def fits(tree, k):
+    """Whether reading a variable of type ``tree`` holding ``k`` gives what the literal
+    ``k`` does: its type holds ``k`` and promotes to ``int`` with either ``int``."""
+    for bits in MODELS:
+        t = type_of(tree, bits)
+        if t is None or not t.holds(k) or promoted(t, bits) != Int(bits, True):
+            return False
+    return True
 
 
 def true(e):
@@ -201,11 +224,11 @@ class Graph:  # pylint: disable=too-many-instance-attributes
         it the last store to ``v`` is that copy, and ``u`` is not stored since."""
         if self._copies is None:
             made = [copy_of(e) if e is not None else None for e in self.expr]
-            pairs = sorted({c for c in made if c is not None})
+            pairs = sorted({c for c in made if c is not None}, key=repr)
             gen = [1 << pairs.index(c) if c else 0 for c in made]
             kill = [0] * len(self.succ)
             for k, (v, u) in enumerate(pairs):
-                vu = self.mask((v, u))
+                vu = self.mask((v, u) if isinstance(u, str) else (v,))
                 for n, s in enumerate(self.store):
                     if s & vu and not gen[n] >> k & 1:
                         kill[n] |= 1 << k
@@ -248,41 +271,58 @@ def reachable(items, stops=None):
 
 
 def unstored(items, local, stops=None):
-    """``items`` without each store ``v = e;`` to a variable of ``local`` dead after it, of a
-    value ``e`` computed from variables and constants alone."""
+    """``items`` without each store ``v = e;`` to a variable of ``local`` dead after it: gone
+    when ``e`` is computed from variables and constants alone, ``e;`` when it calls or
+    stores (its effects kept)."""
     while True:
-        graph = Graph(items, stops)
-        gone = set()
+        graph, new = Graph(items, stops), {}
         for lst, i, st in _positions(items):
-            if _store(st, local):
-                (n,) = graph.heads[(id(lst), i)]
-                if st.lvalue.name not in graph.live_out(n):
-                    gone.add((id(lst), i))
-        if not gone:
+            if _store(st, local) and st.lvalue.name not in graph.live_out(graph.at[(id(lst), i)]):
+                if pure(st.rvalue):
+                    new[(id(lst), i)] = []
+                elif q.calls(st.rvalue) or q.writes(st.rvalue):
+                    new[(id(lst), i)] = [st.rvalue]
+        if not new:
             return items
-        items = dropped(items, gone)
+        items = _replaced(items, new)
 
 
 def _store(st, local):
+    """Whether ``st`` is ``v = e`` to a variable of ``local``."""
     return (
         isinstance(st, c_ast.Assignment)
         and st.op == "="
         and isinstance(st.lvalue, c_ast.ID)
         and st.lvalue.name in local
-        and pure(st.rvalue)
     )
 
 
+def _replaced(items, new):
+    """``items`` with the statement at each position of ``new`` replaced by its list."""
+    out = []
+    for i, st in enumerate(items):
+        if children(st):
+            st = rebuild(st, [_replaced(sub, new) for sub in children(st)])
+        out += new.get((id(items), i), [st])
+    return out
+
+
 def propagated(items, types, stops=None):
-    """``items`` reading ``u`` for ``v`` wherever a copy ``v = u`` (of one type) is available,
-    for each copy whose every use is such a read; the copies are then dead."""
+    """``items`` reading ``u`` for ``v`` wherever a copy ``v = u`` (of a variable of the same
+    type, or a constant :func:`fits` it) is available, for each copy whose every use is such
+    a read; the copies are then dead."""
     graph = Graph(items, stops)
     avail = graph.copies()
     same = {
         (v, u)
         for c in avail
         for v, u in c
-        if v in types and u in types and q.key(types[v]) == q.key(types[u])
+        if v in types
+        and (
+            fits(types[v], u)
+            if isinstance(u, int)
+            else u in types and q.key(types[v]) == q.key(types[u])
+        )
     }
     ok = {p for p in same if all(_covered(graph, n, p, avail) for n in _makers(graph, p))}
 
@@ -318,18 +358,14 @@ def _covered(graph, start, pair, avail):
 
 def _renamed(e, names):
     """``e`` reading ``names[v]`` for each ``v`` (:func:`query.renamed`), ``e`` itself when
-    none applies, None when ``e`` stores to a ``v`` but by ``=`` or to its replacement."""
+    none applies, None when ``e`` stores to a replacement, or to a ``v`` but as ``v = e``."""
     names = {v: u for v, u in names.items() if v in q.reads(e)}
     if not names:
         return e
     stored = q.writes(e)
     if set(names.values()) & stored:
         return None
-    if any(q.variable(q.stored(x)) and q.stored(x).name in names for x in _compound(e)):
+    top = e.lvalue.name if isinstance(e, c_ast.Assignment) and e.op == "=" else None
+    if (stored - {top}) & set(names) or (top in names and top in q.writes(e.rvalue)):
         return None
-    return q.renamed(e, names)
-
-
-def _compound(e):
-    """The stores in ``e`` that also read their target: ``op=``, increments, decrements."""
-    return [x for x in q.walk(e) if q.stored(x) is not None and getattr(x, "op", "=") != "="]
+    return q.renamed(e, {v: constant(u) if isinstance(u, int) else u for v, u in names.items()})

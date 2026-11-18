@@ -10,13 +10,14 @@ from typing import NamedTuple
 from pycparser import c_ast
 
 from . import query as q
-from .flow import Graph, true
+from .listflow import Graph, true
 from .ints import MODELS, Int, constant, promoted, type_of, value
 from .stmt import (
     arms,
     block,
     braced,
     children,
+    cost,
     dropped,
     ends_in_jump,
     iff,
@@ -110,6 +111,62 @@ def shaped(st):
     if last is not None and infinite(st) and not jumps_out(body, c_ast.Continue):
         return c_ast.DoWhile(negate(last), braced(body[:-1]), st.coord)
     return st
+
+
+def sequenced(st):
+    """``[loop, *T]`` of infinite loop ``st`` whose body ends ``if (c) { S; continue; } T``
+    with ``T`` always leaving it (by ``break`` or ``return``, no ``continue``) and no other
+    ``break`` before ``T``: the loop ``{ A; if (!c) break; S }``, then ``T`` falling out
+    where it broke (:func:`_fallen`); else None."""
+    body = block(st.stmt)
+    if not infinite(st) or labels([st]) or targets([st]):
+        return None
+    k = next((k for k in range(len(body) - 1, -1, -1) if _continued(body[k])), None)
+    if k is None or not body[k + 1 :]:
+        return None
+    then, tail = block(body[k].iftrue)[:-1], body[k + 1 :]
+    if jumps_out(body[:k] + then, c_ast.Break) or jumps_out(tail, c_ast.Continue):
+        return None
+    out = _fallen(tail) if ends_in_jump(tail) else None
+    if out is None:
+        return None
+    test = iff(negate(body[k].cond), [c_ast.Break()])
+    return [c_ast.For(None, None, None, braced(body[:k] + [test] + then), st.coord), *out]
+
+
+def _continued(st):
+    """Whether ``st`` is ``if (c) { ...; continue; }``."""
+    then = block(st.iftrue) if isinstance(st, c_ast.If) else []
+    return bool(then) and isinstance(then[-1], c_ast.Continue) and not block(st.iffalse)
+
+
+def _fallen(items):
+    """``items``, each path ending in a jump, with their loop's ``break`` falling off their
+    end instead: ending them or an arm of an ``if`` ending them; an ``if`` before the end
+    with one arm breaking and the other going on to a ``return`` tests for the other arm
+    first, holding the rest; else None."""
+    out = []
+    for i, st in enumerate(items):
+        if isinstance(st, c_ast.Break):
+            return out
+        if not jumps_out([st], c_ast.Break):
+            out.append(st)
+            continue
+        if not isinstance(st, c_ast.If):
+            return None
+        arms_ = children(st)
+        if i == len(items) - 1:
+            got = [_fallen(a) if ends_in_jump(a) else a for a in arms_]
+            return None if None in got else out + [rebuild(st, got)]
+        rest = items[i + 1 :]
+        broke = [jumps_out(a, c_ast.Break) for a in arms_]
+        a, b = (arms_[0], arms_[1]) if broke[0] else (arms_[1], arms_[0])
+        if all(broke) or not ends_in_jump(a) or jumps_out(b + rest, c_ast.Break):
+            return None
+        cond = negate(st.cond) if broke[0] else st.cond
+        fallen = _fallen(a)
+        return None if fallen is None else out + [iff(cond, b + rest), *fallen]
+    return out
 
 
 def step_of(e, v):
@@ -296,8 +353,8 @@ def common(st, own):
 
 def refined(items, own):
     """``items`` with each nested list refined, statements common to every arm moved out
-    (:func:`common`), and each loop shaped (:func:`shaped`) and counted (:func:`counted`);
-    ``own`` the function's variables."""
+    (:func:`common`), each loop sequenced where that costs less (:func:`sequenced`), shaped
+    (:func:`shaped`) and counted (:func:`counted`); ``own`` the function's variables."""
     out = []
     for st in items:
         if children(st):
@@ -307,6 +364,9 @@ def refined(items, own):
             lead, st, tail = common(st, own)
             out += lead
         if isinstance(st, q.LOOPS):
+            seq = sequenced(st)
+            if seq is not None and cost(seq) < cost([st]):
+                st, tail = seq[0], seq[1:] + tail
             st = shaped(st)
             got = counted(st, out, own)
             if got is not None:
