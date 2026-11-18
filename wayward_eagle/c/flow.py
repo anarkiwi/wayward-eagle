@@ -118,6 +118,19 @@ class _Builder:
             return g.add(n.cond, [self.stmt(a, join, brk, cont) for a in (n.iftrue, n.iffalse)])
         if isinstance(n, q.LOOPS):
             return self.loop(n, nxt)
+        if isinstance(n, (c_ast.Switch, c_ast.Case, c_ast.Default)):
+            return self.switch(n, nxt, brk, cont)
+        if isinstance(n, (c_ast.Label, c_ast.Goto)):
+            return self.jump(n, nxt, brk, cont)
+        if isinstance(n, (c_ast.Break, c_ast.Continue)):
+            return brk if isinstance(n, c_ast.Break) else cont
+        if isinstance(n, c_ast.Return):
+            return g.add(n, [g.exit])
+        return self.expression(n, nxt)
+
+    def switch(self, n, nxt, brk, cont):
+        """The entry vertex of ``switch`` statement ``n``, or of one of its case labels."""
+        g = self.g
         if isinstance(n, c_ast.Switch):
             after = g.add(None, [nxt], n)
             self.switches.append([])
@@ -125,24 +138,21 @@ class _Builder:
             cases = self.switches.pop()[::-1]
             default = any(isinstance(c, c_ast.Default) for c, _ in cases)
             return g.add(n.cond, [v for _, v in cases] + [after] * (not default))
-        if isinstance(n, (c_ast.Case, c_ast.Default)):
-            join = g.add(None, [self.sequence(n.stmts, nxt, brk, cont)], n)
-            self.switches[-1].append((n, join))
-            return join
+        join = g.add(None, [self.sequence(n.stmts, nxt, brk, cont)], n)
+        self.switches[-1].append((n, join))
+        return join
+
+    def jump(self, n, nxt, brk, cont):
+        """The entry vertex of label ``n`` (its statement after it) or of goto ``n``."""
+        g = self.g
         if isinstance(n, c_ast.Label):
             join = self.label(n.name, n)
             g.succ[join] = [self.stmt(n.stmt, nxt, brk, cont)]
             return join
-        if isinstance(n, c_ast.Goto):
-            if isinstance(n.name, str):
-                return self.label(n.name)
-            self.computed.append(g.add(n))
-            return self.computed[-1]
-        if isinstance(n, (c_ast.Break, c_ast.Continue)):
-            return brk if isinstance(n, c_ast.Break) else cont
-        if isinstance(n, c_ast.Return):
-            return g.add(n, [g.exit])
-        return self.expression(n, nxt)
+        if isinstance(n.name, str):
+            return self.label(n.name)
+        self.computed.append(g.add(n))
+        return self.computed[-1]
 
     def loop(self, n, nxt):
         """The entry vertex of loop ``n``: a join at its head, which the code before it and
