@@ -24,6 +24,8 @@ from tqdm import tqdm
 
 from . import c
 from .c import query as q
+from .c.flow import Flow, bare
+from .c.model import model as _model, promoted as _promoted, width as _width
 
 COGNITIVE = "cognitive-complexity"
 #: The class of each clang-tidy check's diagnostics.
@@ -46,9 +48,12 @@ AST = (
     "common-arm-statements",
     "subsumed-cast",
     "effect-in-condition",
+    "status-call",
     "uncounted-loop",
     "goto",
     "duplicate-code",
+    "copy-variable",
+    "edge-copy",
 )
 #: The fewest statements a repeated sequence holds.
 SEQUENCE = 2
@@ -57,6 +62,7 @@ CONFIG = json.dumps({"Checks": ",".join(["-*", *TIDY])})
 LABELS = (c_ast.Case, c_ast.Default)
 UNMOVED = (c_ast.Decl, c_ast.DeclList, c_ast.Label, c_ast.EmptyStatement)
 LOCALS = ("VarDecl", "ParmVarDecl")
+COMPARE = frozenset(("==", "!=", "<", "<=", ">", ">="))
 ARITH = frozenset("+-~")
 #: The targets whose data models a cast must be a no-op on to be subsumed.
 TARGETS = (c.HOST, c.NARROW)
@@ -75,10 +81,12 @@ class Site(NamedTuple):
 
 
 class Report(NamedTuple):
-    """A file's sites, and each function's cognitive complexity."""
+    """A file's sites, each function's cognitive complexity, and each function's number of
+    automatic local variables."""
 
     sites: list
     complexity: dict
+    locals: dict
 
     def counts(self):
         """Sites per class, every class included."""
@@ -138,7 +146,7 @@ class Unit:  # pylint: disable=too-many-instance-attributes
         self.spans = sorted((*self.c.span(f), f.decl.name) for f in self.functions)
         self.symbol_of = {f: self.c.sema[f].ref for f in self.functions}
         self.impure = self._impure()
-        self.sites, self.fn, self.addressed = [], None, set()
+        self.sites, self.fn, self.addressed, self.moved = [], None, set(), set()
         self.models = {c.HOST: _model(c.HOST)}
 
     def function_at(self, line):
@@ -153,6 +161,7 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             self._enter(f)
             self._visit(f, [], casts)
             self._duplicates(f)
+            self._copies(f)
         if casts:
             narrow = Casts(c.load(self.path, args=self.args, target=c.NARROW))
             keep = narrow.subsumed()
@@ -195,7 +204,10 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             self._arms(n)
         if isinstance(n, (c_ast.If, *q.LOOPS)) and n.cond is not None:
             effects = self.effects(n.cond)
-            if effects:
+            status = self._status(n.cond) if effects else None
+            if status is not None:
+                self.add("status-call", n, f"call {status}")
+            elif effects:
                 self.add("effect-in-condition", n, ", ".join(effects))
         if isinstance(n, c_ast.Compound):
             sub = list(n.block_items or ())
@@ -294,6 +306,101 @@ class Unit:  # pylint: disable=too-many-instance-attributes
                 out.add(f"call {q.callee(x) or ''}")
         return sorted(out)
 
+    # status-call.
+
+    def _status(self, cond):
+        """The name of the function condition ``cond`` calls when it is only that call (under
+        casts, ``!`` or a comparison with a constant) of a :meth:`status` function, its
+        arguments without effects and no automatic variable of the caller addressed."""
+        while True:
+            if isinstance(cond, c_ast.Cast) or (isinstance(cond, c_ast.UnaryOp) and cond.op == "!"):
+                cond = cond.expr
+            elif isinstance(cond, c_ast.BinaryOp) and cond.op in COMPARE:
+                if self.constant(cond.right):
+                    cond = cond.left
+                elif self.constant(cond.left):
+                    cond = cond.right
+                else:
+                    return None
+            else:
+                break
+        if not isinstance(cond, c_ast.FuncCall) or not self.status(q.callee(cond)):
+            return None
+        if any(self.effects(a) for a in q.arguments(cond)) or self._exposed():
+            return None
+        return q.callee(cond)
+
+    @functools.cached_property
+    def _statuses(self):
+        """Names of the functions defined here returning an integer whose every ``return``
+        returns a constant (an exit code)."""
+        out = set()
+        for f in self.functions:
+            rets = [n.expr for n in q.walk(f) if isinstance(n, c_ast.Return)]
+            if rets and all(
+                r is not None and self.constant(r) and self.integer(self.c.sema[r].converted)
+                for r in rets
+            ):
+                out.add(f.decl.name)
+        return out
+
+    def status(self, name):
+        """Whether ``name`` is a function defined here returning only exit codes."""
+        return name in self._statuses
+
+    def _exposed(self):
+        """Whether an automatic variable of this function is addressed, by ``&`` or as an
+        array, so a callee might store to it."""
+        fn = self.symbol_of[self.fn]
+        return any(
+            sym.kind in LOCALS
+            and sym.function == fn
+            and sym.storage not in ("static", "extern")
+            and (sym.id in self.addressed or "[" in sym.type.canon)
+            for sym in self.c.symbols.values()
+        )
+
+    # copy-variable and edge-copy.
+
+    def _copyable(self, sym, rhs):
+        """Whether ``sym = rhs`` copies ``rhs`` unchanged: a variable of ``sym``'s type, or a
+        constant converted to ``sym``'s integer type."""
+        if isinstance(rhs, c_ast.ID):
+            other = self.c.symbol(rhs)
+            if other is not None and other.kind in ("VarDecl", "ParmVarDecl"):
+                return bare(other.type.canon) == bare(sym.type.canon)
+        return self.integer(sym.type) and self.constant(rhs)
+
+    def _copies(self, f):
+        """copy-variable and edge-copy sites of function ``f``."""
+        flow = Flow(self.c, f, self._call_effect, self._copyable)
+        sym = self.c.symbols
+        for d, _ in flow.copies():
+            if sym[d.var].kind != "VarDecl":
+                continue
+            src = sym[d.copy[1]].name if d.copy[0] == "var" else self.c.source(_rhs(d.node))
+            self.add("copy-variable", d.node, f"{sym[d.var].name} copies {src or 'a constant'}")
+        for j, v, defs in flow.edge_copies():
+            if all(id(d.node) in self.moved for d in defs):
+                continue
+            at = flow.cfg.nodes[j] if flow.cfg.origin[j] is None else flow.cfg.origin[j]
+            lines = ", ".join(map(str, sorted(self.line(d.node) for d in defs)))
+            self.add("edge-copy", at, f"{sym[v].name}: lines {lines}")
+
+    def locals(self):
+        """``{function: number of automatic variables it declares}``, parameters aside."""
+        return {
+            f.decl.name: sum(
+                1
+                for n in q.walk(f.body)
+                if isinstance(n, c_ast.Decl)
+                and (sym := self.c.symbol(n)) is not None
+                and sym.kind == "VarDecl"
+                and sym.storage not in ("static", "extern")
+            )
+            for f in self.functions
+        }
+
     # duplicate-code.
 
     def _duplicates(self, f):  # pylint: disable=too-many-locals
@@ -366,8 +473,10 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             and self._hoistable(first, conds)
         ):
             self.add("common-arm-statements", n, f"leads every arm: line {self.line(first)}")
+            self.moved.update(id(arm[0]) for arm in arms)
         if sink and all(k[-1] == keys[0][-1] for k in keys) and not isinstance(last, UNMOVED):
             self.add("common-arm-statements", n, f"ends every arm: line {self.line(last)}")
+            self.moved.update(id(arm[-1]) for arm in arms)
 
     def _hoistable(self, st, conds):
         """Whether ``st`` may run before conditions ``conds``: they have no effect, ``st``
@@ -595,91 +704,6 @@ class Unit:  # pylint: disable=too-many-instance-attributes
 # subsumed-cast.
 
 
-class Int(NamedTuple):
-    """An integer type's range, width, and whether conversion to it wraps modulo its width."""
-
-    lo: int
-    hi: int
-    bits: int
-    wraps: bool
-
-    def holds(self, other):
-        """Whether every value of ``other`` is a value of this type."""
-        return self.lo <= other.lo and other.hi <= self.hi
-
-
-#: The standard integer types by clang's canonical spelling, ``_Bool`` apart.
-INTEGERS = (
-    "char",
-    "signed char",
-    "unsigned char",
-    "short",
-    "unsigned short",
-    "int",
-    "unsigned int",
-    "long",
-    "unsigned long",
-    "long long",
-    "unsigned long long",
-    "__int128",
-    "unsigned __int128",
-)
-#: A translation unit whose enumerators are each type's width, and whether ``char`` is
-#: signed, as clang evaluates them for a target.
-PROBE = "enum {\n%s\n  char_signed = (char)-1 < 0\n};\n" % "\n".join(
-    ("#ifdef __SIZEOF_INT128__\n" if "__int128" in t else "")
-    + f"  w{k} = sizeof({t}) * __CHAR_BIT__,"
-    + ("\n#endif" if "__int128" in t else "")
-    for k, t in enumerate(INTEGERS)
-)
-
-
-@functools.cache
-def _model(target):
-    """``{canonical integer type: Int}`` of ``target``'s data model: the widths clang gives
-    the enumerators of :data:`PROBE`; an enum is ``int``."""
-    with tempfile.TemporaryDirectory() as tmp:
-        path = pathlib.Path(tmp) / "probe.c"
-        path.write_text(PROBE, encoding="utf-8")
-        unit = c.load(path, target=target)
-    (decl,) = unit.ast.ext
-    values = {e.name: int(unit.info(e.value).value) for e in decl.type.values.enumerators}
-    out = {"_Bool": Int(0, 1, 1, False)}
-    for k, name in enumerate(INTEGERS):
-        if f"w{k}" in values:
-            signed = not name.startswith("unsigned") and (name != "char" or values["char_signed"])
-            out[name] = _sized(values[f"w{k}"], signed)
-    return out
-
-
-def _sized(bits, signed):
-    """The ``Int`` of a ``bits``-wide integer type, ``signed`` or not."""
-    if signed:
-        return Int(-(1 << (bits - 1)), (1 << (bits - 1)) - 1, bits, True)
-    return Int(0, (1 << bits) - 1, bits, True)
-
-
-def _width(model, typ):
-    """The ``Int`` of :class:`~wayward_eagle.c.Type` ``typ`` in ``model``, None for a type no
-    integer."""
-    if typ is None:
-        return None
-    canon = typ.canon
-    for qual in ("const ", "volatile "):
-        canon = canon.replace(qual, "")
-    if canon.startswith("enum "):
-        return model["int"]
-    return model.get(canon)
-
-
-def _promoted(model, t):
-    """``Int`` ``t`` after the integer promotions in ``model``."""
-    native = model["int"]
-    if t.bits < native.bits or not t.wraps:
-        return native if native.holds(t) else model["unsigned int"]
-    return t
-
-
 def _no_op(model, role, to, frm, into):
     """Whether a cast to ``to`` of a value of ``frm`` used as ``role`` (converted to
     ``into``) is a no-op in ``model``."""
@@ -802,6 +826,11 @@ def _pure(sym):
     return bool(sym.attrs & {"PureAttr", "ConstAttr"})
 
 
+def _rhs(n):
+    """The value an assignment or initialisation stores."""
+    return n.init if isinstance(n, c_ast.Decl) else n.rvalue
+
+
 def _same(a, b):
     """Whether symbols ``a`` and ``b`` are one."""
     return a is not None and b is not None and a.id == b.id
@@ -915,7 +944,7 @@ def census(path, include=(), args=()):
         run.wait()
     sites, scores = unit.complexity()
     sites += unit.tidied(run) + ast
-    return Report(sorted(sites, key=lambda s: (s.line, s.cls, s.detail)), scores)
+    return Report(sorted(sites, key=lambda s: (s.line, s.cls, s.detail)), scores, unit.locals())
 
 
 def census_all(paths, include=(), jobs=None, quiet=False):
@@ -936,12 +965,14 @@ def adapter(options):
     """virtuous-cycles adapter ``wayward-census``: site counts per key (docs/census.md).
 
     Options ``files`` (globs), ``include`` (directories), ``key`` (template over ``stem``,
-    ``path``, ``class`` and ``function``) and ``total`` (a file's complexity key)."""
+    ``path``, ``class`` and ``function``), ``total`` (a file's complexity key) and ``locals``
+    (a file's number of local variables key, empty for none)."""
     files = sorted({p for g in options["files"] for p in glob.glob(g, recursive=True)})
     if not files:
         raise ValueError(f"no files match {options['files']}")
     template = options.get("key", "{stem}:{class}")
     total = options.get("total", "{stem}:cognitive-complexity")
+    local = options.get("locals", "{stem}:locals")
     out = Counter()
     for path, rep in census_all(files, options.get("include", ())).items():
         names = {"stem": pathlib.Path(path).stem, "path": path}
@@ -952,4 +983,6 @@ def adapter(options):
             if s.cls != COGNITIVE:
                 out[template.format(function=s.function, **names, **{"class": s.cls})] += 1
         out[total.format(**names)] += sum(rep.complexity.values())
+        if local:
+            out[local.format(**names)] += sum(rep.locals.values())
     return dict(out)
