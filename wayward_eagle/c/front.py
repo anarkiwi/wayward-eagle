@@ -55,7 +55,7 @@ class Cast(NamedTuple):
     type: Type
 
 
-class Info:  # pylint: disable=too-few-public-methods
+class Info:  # pylint: disable=too-few-public-methods,too-many-instance-attributes
     """What clang knows of a node: its clang kind, type, the implicit casts applied to its
     value (innermost first), the canonical id of the declaration it references or declares,
     its source range (expansion locations), the spelling location of its first token, an
@@ -163,7 +163,7 @@ def _parser():
     return c_parser.CParser()
 
 
-class Types:
+class Types:  # pylint: disable=too-few-public-methods
     """C type spellings clang prints, as ``c_ast`` type trees parsed by pycparser as type
     names with the translation unit's typedef names declared; a spelling pycparser cannot
     parse (a GNU extension type) is an ``IdentifierType`` of it."""
@@ -203,12 +203,14 @@ def _quals(tree):
     return list(getattr(tree, "quals", None) or [])
 
 
-class Unit:
+class Unit:  # pylint: disable=too-many-instance-attributes
     """A C file as ``c_ast``: ``ast`` the ``FileAST`` of its own declarations, ``functions``
     its function definitions, ``sema`` each node's :class:`Info`, ``symbols`` each
     declaration's :class:`Symbol` by canonical id, ``target`` the target parsed for."""
 
-    def __init__(self, path, ast, sema, symbols, target, macros=None, types=None):
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+        self, path, ast, sema, symbols, target, macros=None, types=None
+    ):
         self.path, self.ast, self.sema, self.symbols, self.target = path, ast, sema, symbols, target
         self.macros, self.types = macros or {}, types or Types()
         self.functions = [d for d in ast.ext if isinstance(d, c_ast.FuncDef)]
@@ -482,7 +484,7 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
         ]
         return [c_ast.AttributeSpecifier(out)] if out else []
 
-    def function_decl(self, j):
+    def function_decl(self, j):  # pylint: disable=too-many-locals
         """A function's ``c_ast``: a ``FuncDef`` when it has a body, else a ``Decl``."""
         rng = self._range(j)
         sym = self._symbol(j)
@@ -874,7 +876,7 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
         """``(T){...}``"""
         (init,) = self._exprs(j)
         tree = self.types.tree(_type(j).qual)
-        node = c_ast.CompoundLiteral(c_ast.Typename(None, _quals(tree), None, tree), init)
+        node = c_ast.CompoundLiteral(c_ast.Typename(None, _quals(tree), None, tree), init, [])
         self.info(node, j, rng)
         return node
 

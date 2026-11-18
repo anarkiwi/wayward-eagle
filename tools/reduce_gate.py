@@ -35,7 +35,7 @@ def scores(path, include, originals):
     return out
 
 
-def main(argv=None):
+def main(argv=None):  # pylint: disable=too-many-locals
     """Reduce, score and print a table per tune; exit status 1 when any function is worse."""
     ap = argparse.ArgumentParser()
     ap.add_argument("outdir")
@@ -65,7 +65,7 @@ def main(argv=None):
         ours = scores(out / f"{name}.c", include, originals)
         print(f"\n{name}: load {loaded - start:.2f} s, reduce {done - loaded:.2f} s")
         print(f"{'function':16} {'lifted':>7} {'theirs':>7} {'ours':>7}")
-        for f in sorted(originals, key=lambda o: (-base.get(o, 0), o)):
+        for f in sorted(originals, key=lambda o, b=base: (-b.get(o, 0), o)):
             if base.get(f, 0) or theirs.get(f, 0) or ours.get(f, 0):
                 mark = " worse" if ours.get(f, 0) > theirs.get(f, 0) else ""
                 print(f"{f:16} {base.get(f, 0):7} {theirs.get(f, 0):7} {ours.get(f, 0):7}{mark}")

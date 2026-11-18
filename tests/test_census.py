@@ -338,7 +338,10 @@ def test_duplicate_code_tells_literals_in_header_macros_apart(tmp_path):
     (tmp_path / "t.h").write_text(
         "".join(f"#define R{k} (b + {k})\n" for k in range(4)), encoding="utf-8"
     )
-    body = '#include "t.h"\nuint8_t b[9];\nvoid f(void) { R0[0] = 0; R1[0] = 0; R2[0] = 0; R3[0] = 0; }'
+    body = (
+        '#include "t.h"\nuint8_t b[9];\n'
+        "void f(void) { R0[0] = 0; R1[0] = 0; R2[0] = 0; R3[0] = 0; }"
+    )
     assert not sites(tmp_path, body, (f"-I{tmp_path}",), "duplicate-code")
     same = body.replace("R2", "R0").replace("R3", "R1")
     assert len(sites(tmp_path, same, (f"-I{tmp_path}",), "duplicate-code")) == 1

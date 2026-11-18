@@ -25,7 +25,9 @@ TYPES = (
 
 
 def kids(n):
-    """The child nodes of ``n``, in order."""
+    """The child nodes of ``n``, in order (a computed ``goto``'s expression included)."""
+    if isinstance(n, c_ast.Goto):
+        return [n.name] if isinstance(n.name, c_ast.Node) else []
     return [c for _, c in n.children()]
 
 
@@ -36,7 +38,7 @@ def walk(n, stop=()):
     while todo:
         c = todo.pop()
         yield c
-        todo += reversed([k for _, k in c.children() if not isinstance(k, stop)])
+        todo += reversed([k for k in kids(c) if not isinstance(k, stop)])
 
 
 def statements(n):
@@ -53,9 +55,13 @@ def commas(n):
 
 
 def _attrs(n):
-    return tuple(
-        tuple(v) if isinstance(v, list) else v for v in (getattr(n, a) for a in n.attr_names)
-    )
+    """``n``'s attributes but its child nodes."""
+    out = []
+    for a in n.attr_names:
+        v = getattr(n, a)
+        if not isinstance(v, c_ast.Node):
+            out.append(tuple(v) if isinstance(v, list) else v)
+    return tuple(out)
 
 
 def key(n, unit=None, by_name=False):

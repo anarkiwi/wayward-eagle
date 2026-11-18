@@ -1,3 +1,4 @@
+# pylint: disable=duplicate-code
 """Rewrites of a C function (a ``c_ast.FuncDef``) that lower its cognitive complexity and keep
 what it does: sections, tails, early exits, flattened arms and extracted blocks
 (docs/rewrites.md), over the statement lists of :mod:`wayward_eagle.c.stmt`."""
@@ -76,11 +77,11 @@ def sections(items, local):
     for i, st in enumerate(items):
         if not isinstance(st, c_ast.Label):
             continue
-        before, after, lab = items[start:i], items[i + 1 :], st.name
-        shared = names_in(before) & names_in(after) & local
-        if shared or targets(before) & (labels(after) - {lab}):
+        before, rest, lab = items[start:i], items[i + 1 :], st.name
+        shared = names_in(before) & names_in(rest) & local
+        if shared or targets(before) & (labels(rest) - {lab}):
             continue
-        if targets(after) & (labels(before) | {lab}):
+        if targets(rest) & (labels(before) | {lab}):
             continue
         out.append((lab, before))
         start = i + 1
@@ -99,16 +100,16 @@ def tails(items, local, make, stops=None):
         )
         if i is None:
             return items, out
-        before, after, lab = items[:i], items[i + 1 :], items[i].name
-        if targets(after) & (labels(before) | {lab}) or targets(before) & labels(after):
+        before, rest, lab = items[:i], items[i + 1 :], items[i].name
+        if targets(rest) & (labels(before) | {lab}) or targets(before) & labels(rest):
             return items, out
-        body = calling(after, {t: make(t, ps) for t, ps in refs.items()})
+        body = calling(rest, {t: make(t, ps) for t, ps in refs.items()})
         if out:
             body = [*body, make(out[0][0], refs[out[0][0]])]
         live = names_in(body) & names_in(before) & local
         params = sorted((v for v in live if not assigned_first(body, v, stops)), key=order)
         refs[lab] = params
-        out.insert(0, (lab, after, params))
+        out.insert(0, (lab, rest, params))
         items = before
 
 
@@ -278,7 +279,9 @@ def _site(xname, site, codes):
     return [c_ast.Assignment("=", c_ast.ID(tmp), site), *tests], tmp
 
 
-def _extraction(xname, chunk, rest, fn, same=frozenset(), whole=None):
+def _extraction(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    xname, chunk, rest, fn, same=frozenset(), whole=None
+):
     """``(call site, piece, status variable)`` of extracting ``chunk`` to ``xname`` from a
     function whose other statements are ``rest``, or None when a goto crosses its edge, it
     falls into the next case, returns a value, or sets more than one variable used after it
@@ -326,7 +329,7 @@ def _best(name, items, fn):
     return best
 
 
-def extracted(name, args, items, fn, ret=None):
+def extracted(name, args, items, fn, ret=None):  # pylint: disable=too-many-locals
     """``([Piece], status variables)`` of function ``name`` (parameters ``args``, returning
     ``ret``) and the functions extracted from it: while above :data:`THRESHOLD`, the block
     saving the most (:func:`_best`) becomes ``NAME_xK`` and its call; each in turn."""
@@ -339,13 +342,17 @@ def extracted(name, args, items, fn, ret=None):
         k += 1
         chunk, (site, piece, tmp) = best
         items = _swap(items, chunk, site)
-        end = lambda r=piece.ret: _end(
-            r
-        )  # noqa: E731 pylint: disable=unnecessary-lambda-assignment
-        inner, more = extracted(piece.name, piece.args, ending(piece.items, end), fn, piece.ret)
+        inner, more = extracted(
+            piece.name, piece.args, ending(piece.items, _ender(piece.ret)), fn, piece.ret
+        )
         out += inner
         temps |= more | ({tmp} - {None})
     return [Piece(name, args, items, ret), *out], temps
+
+
+def _ender(ret):
+    """A maker of the jump ending a function returning ``ret``."""
+    return lambda: _end(ret)
 
 
 def _splice(items, f):
@@ -442,10 +449,11 @@ def flattened(items, depth=0):
 
 class Unsupported(ValueError):
     """A function the rewrites leave as it is: one whose locals cannot move between
-    functions (static, an array, address taken, one name of two types)."""
+    functions (static, an array, address taken, one name of two types), or with a
+    computed ``goto``."""
 
 
-def _normal(items, types):
+def _normal(items, types):  # pylint: disable=too-many-branches
     """``items`` in the form of :mod:`wayward_eagle.c.stmt`, each local declaration an
     assignment (its type in ``types``), braces around plain blocks dropped."""
     out = []
@@ -692,7 +700,7 @@ def _signature(name, args, ret, types, status):
     return c_ast.Decl(name, [], None, ["static"], [], c_ast.FuncDecl(params, rtype), None, None)
 
 
-def reduce_function(fd, noreturn=frozenset(), status=None):
+def reduce_function(fd, noreturn=frozenset(), status=None):  # pylint: disable=too-many-locals
     """``[FuncDef]`` of C function ``fd`` rewritten (:func:`reduced`): the functions it is cut
     into (each ``static``) first, ``fd``'s own last; ``[fd]`` when its locals cannot move.
     ``noreturn``: names of functions that never return; ``status``: the type of exit codes."""
@@ -703,6 +711,8 @@ def reduce_function(fd, noreturn=frozenset(), status=None):
         body = _normal(block(copy.copy(fd.body)), types)
         if _addressed(fd.body) & set(types):
             raise Unsupported("a local's address is taken")
+        if any(isinstance(n, c_ast.Goto) and not isinstance(n.name, str) for n in q.walk(fd.body)):
+            raise Unsupported("a computed goto")
     except Unsupported:
         return [fd]
     names = [n for n, _ in params]
@@ -744,7 +754,7 @@ def reduce_unit(unit, status=None, functions=None):
     """The C text of :class:`~wayward_eagle.c.Unit` ``unit`` with each function definition
     (of the names ``functions``, all when None) reduced (:func:`reduce_function`) in place,
     the rest of the file as written."""
-    from .render import render  # pylint: disable=import-outside-toplevel
+    from .printer import render  # pylint: disable=import-outside-toplevel
 
     noreturn = {s.name for s in unit.symbols.values() if s.noreturn}
     text, out, at = unit.text, [], 0

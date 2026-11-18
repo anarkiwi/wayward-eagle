@@ -1,3 +1,4 @@
+# pylint: disable=duplicate-code
 """A C function body as nested statement lists of ``c_ast`` nodes, and what they read, write
 and jump to: the form :mod:`wayward_eagle.c.reduce` rewrites. Every nested body is a
 ``Compound`` whose ``block_items`` is the list, labels hold an empty statement, and a
@@ -262,7 +263,9 @@ def _leaf(e, v, done):
     return done or v in own_writes(e), True
 
 
-def _da(items, v, done, stops):  # pylint: disable=too-many-return-statements,too-many-branches
+def _da(  # pylint: disable=too-many-return-statements,too-many-branches,too-many-locals
+    items, v, done, stops
+):
     """``(definitely assigned after, no read before assignment)`` over ``items``; control
     reaching a label may come from anywhere, so nothing is assigned there."""
     gone = False
@@ -289,9 +292,9 @@ def _da(items, v, done, stops):  # pylint: disable=too-many-return-statements,to
             cond = q.reads(st.cond) if st.cond is not None else set()
             if v in cond and not done and not isinstance(st, c_ast.DoWhile):
                 return done, False
-            after, ok = _da(block(st.stmt), v, done, stops)
+            set_after, ok = _da(block(st.stmt), v, done, stops)
             late = cond | (q.reads(st.next) if getattr(st, "next", None) is not None else set())
-            if not ok or (v in late and not after and not isinstance(st, c_ast.While)):
+            if not ok or (v in late and not set_after and not isinstance(st, c_ast.While)):
                 return done, False
         elif isinstance(st, c_ast.Switch):
             if v in q.reads(st.cond) and not done:

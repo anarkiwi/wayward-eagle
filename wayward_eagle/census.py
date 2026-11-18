@@ -195,10 +195,10 @@ class Unit:  # pylint: disable=too-many-instance-attributes
         """Record a site of ``cls`` at ``line``."""
         self.sites.append(Site(cls, self.fn.decl.name, line, detail))
 
-    def _visit(self, n, stack, casts):
+    def _visit(self, n, stack, casts):  # pylint: disable=too-many-branches
         """Check ``n`` (its ancestors ``stack``) and every node under it."""
         if isinstance(n, c_ast.Cast):
-            got = Casts(self.c, self.models).subsumed_at(n, stack, self.fn)
+            got = Casts(self.c, self.models).subsumed_at(n, stack)
             if got is not None:
                 casts.append(
                     (Site("subsumed-cast", self.fn.decl.name, self.line(n), got), _key(self.c, n))
@@ -704,7 +704,7 @@ class Casts:
         out = set()
 
         def visit(n, stack, fn):
-            if isinstance(n, c_ast.Cast) and self.subsumed_at(n, stack, fn) is not None:
+            if isinstance(n, c_ast.Cast) and self.subsumed_at(n, stack) is not None:
                 out.add(_key(self.c, n))
             stack.append(n)
             for k in q.kids(n):
@@ -716,8 +716,8 @@ class Casts:
             visit(f, [], f)
         return out
 
-    def subsumed_at(self, n, stack, fn):
-        """The detail of cast ``n`` (its ancestors ``stack``, in function ``fn``) when it is
+    def subsumed_at(self, n, stack):
+        """The detail of cast ``n`` (its ancestors ``stack``) when it is
         subsumed, else None."""
         info = self.c.sema[n]
         sub = self.c.sema.get(n.expr)
@@ -839,10 +839,8 @@ def _always(cond, step):
     under only ``&&``, commas and casts."""
     if cond is step:
         return True
-    if (
-        isinstance(cond, c_ast.Cast)
-        or (isinstance(cond, c_ast.BinaryOp) and cond.op == "&&")
-        or isinstance(cond, c_ast.ExprList)
+    if isinstance(cond, (c_ast.Cast, c_ast.ExprList)) or (
+        isinstance(cond, c_ast.BinaryOp) and cond.op == "&&"
     ):
         return any(_always(k, step) for k in q.kids(cond) if not isinstance(k, q.TYPES))
     return False
@@ -873,7 +871,7 @@ def _switch_arms(n, unit):
     return [a[:-1] if isinstance(a[-1], c_ast.Break) else a for a in arms], sink
 
 
-class Tidy:
+class Tidy:  # pylint: disable=too-few-public-methods
     """clang-tidy's checks run on a file in the background, its output in a file until
     :meth:`wait` (so a long report never blocks it)."""
 

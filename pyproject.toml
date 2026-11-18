@@ -43,5 +43,8 @@ packages = ["wayward_eagle", "wayward_eagle.c"]
 [tool.black]
 line-length = 100
 
+[tool.pylint.main]
+extension-pkg-allow-list = ["orjson"]
+
 [tool.pylint.format]
 max-line-length = 100

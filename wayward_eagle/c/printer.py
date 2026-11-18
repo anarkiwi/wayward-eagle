@@ -8,6 +8,8 @@ import subprocess
 import clang_format
 from pycparser import c_ast, c_generator
 
+from .front import Opaque
+
 #: Binary operators by group, for :data:`BARE`.
 GROUPS = {
     **dict.fromkeys(("*", "/", "%"), "mul"),
@@ -107,6 +109,8 @@ class Generator(c_generator.CGenerator):
         return n.text or ""
 
     def _generate_stmt(self, n, add_indent=False):
+        if isinstance(n, Opaque) and n.kind.endswith("Stmt"):
+            n = c_ast.ExprList([n])
         out = super()._generate_stmt(n, add_indent)
         at = self.lines.get(n)
         return out if at is None else f'#line {at[0]} "{at[1]}"\n' + out

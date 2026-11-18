@@ -12,3 +12,31 @@ an `else if`, an `else` and a `goto` one. `reduced` returns the functions (`Piec
 | `extracted` | a function above `THRESHOLD` (25, SonarQube's default for C) | while above it, the nested block whose extraction saves the most, its call site counted, becomes a function (`PIECE_xK`) of the variables it reads: one leaving by one kind of exit (`return`, `break`, `continue`) returns whether it took it and its call is tested (`if (f(..)) return;`), one leaving by several returns a code its call stores in `PIECE_xK_k` and tests per exit, and one setting one variable used after it returns it (`v = f(.., v);`). A block a goto outside enters, that falls into the next case, that returns from a function returning a value, or that both leaves early and sets a variable used after it, stays. |
 
 Every rewrite lowers the cost, so each terminates.
+
+The tuple API above (`reduced`, `Function`, `Piece`, [statement trees](trees.md)) remains for
+deity-informant until it passes `c_ast`.
+
+## Over `c_ast`
+
+`wayward_eagle.c.reduce` applies the same rewrites to a `c_ast.FuncDef`:
+`reduce_function(fd, noreturn, status)` returns `[FuncDef]`, each piece `static`, the
+original last (`reduce_unit` and `wayward-eagle reduce` do this for every function of a file;
+see [the C layer](c.md#reducing)). A whole function is prepared and finished thus:
+
+- each local declaration becomes the assignment of its initializer, its type kept; each piece
+  declares the variables it uses in the innermost statement list that sets them before each
+  read, at the first assignment when that is a statement of the list, else at its start;
+- a `switch` arm falling into the next ends in `__attribute__((fallthrough));`, so falling off
+  an arm's end leaves the switch; when rendered, such an arm gets a `break;`;
+- an `else` holding one `if` is an `else if`, an empty `else` none;
+- a piece's assignments of a value computed from variables and constants alone to a local it
+  never reads are dropped;
+- a parameter a piece never reads is `(void)p;`;
+- a function whose locals cannot move between functions (`static`, an array, an initializer
+  list, its address taken, one name of two types), or holding a computed `goto`, is left as
+  it is.
+
+An extracted block's inputs are the variables it reads before setting them, a call to a
+`noreturn` function ending a path. Its outputs are the variables it sets that statements able
+to run after it read, when no loop around it and no goto out of that region can return
+before it; otherwise those mentioned anywhere else in the function.

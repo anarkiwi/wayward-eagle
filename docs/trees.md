@@ -1,5 +1,8 @@
 # Statement trees
 
+The tuple form deity-informant passes `reduced`; the same rewrites over `c_ast` are in
+[the C layer](c.md#reducing).
+
 A function body is a list of statements, each a tuple:
 
 | Statement | Form |

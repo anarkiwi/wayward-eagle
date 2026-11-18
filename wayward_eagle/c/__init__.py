@@ -38,7 +38,7 @@ from .query import (
     writes,
 )
 from .reduce import THRESHOLD, prototypes, reduce_function, reduce_unit
-from .render import Generator, format_c, render, text
+from .printer import Generator, format_c, render, text
 
 __all__ = [
     "HOST",
