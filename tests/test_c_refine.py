@@ -192,7 +192,7 @@ def test_switch_arms_ending_alike_end_after_it(tmp_path):
     assert "case 1: { y(); break; } default: { } } w(1); }" in body(got)
     early = behaves(
         tmp_path,
-        "void f(void) { switch (p) { case 0: if (q) break; x(); w(1); break;" " default: w(1); } }",
+        "void f(void) { switch (p) { case 0: if (q) break; x(); w(1); break; default: w(1); } }",
     )
     assert "x(); w(1); break; } default: { w(1); } } }" in body(early)
 
