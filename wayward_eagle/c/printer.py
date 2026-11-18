@@ -29,6 +29,11 @@ BARE = frozenset(
 )
 #: Operators whose left operand of the same operator needs no parentheses.
 ASSOCIATIVE = frozenset(("+", "*", "&", "|", "^", "&&", "||", "-", "/", "%", "<<", ">>"))
+#: Groups whose operators share a precedence and associate left to right, a left operand of
+#: one read as such by readers and compilers alike.
+LEFT = frozenset(("mul", "add", "shift"))
+#: Operands a conditional operator's condition or middle operand parenthesizes.
+LOOSE = (c_ast.TernaryOp, c_ast.Assignment, c_ast.ExprList)
 
 
 def _group(op):
@@ -65,6 +70,8 @@ class Generator(c_generator.CGenerator):
             p, q = self.precedence_map[d.op], self.precedence_map[op]
             if d.op == op and op in ASSOCIATIVE and not right:
                 return self.visit(d)
+            if p == q and _group(op) in LEFT and not right:
+                return self.visit(d)
             if p > q and (_group(d.op), _group(op)) in BARE:
                 return self.visit(d)
         return "(" + self.visit(d) + ")"
@@ -83,16 +90,14 @@ class Generator(c_generator.CGenerator):
         return "(" + self._generate_type(n.to_type, emit_declname=False) + ")" + operand
 
     def visit_TernaryOp(self, n):  # pylint: disable=invalid-name
-        """``c ? a : b``, each operand parenthesized unless simple."""
-        return " ".join(
-            (
-                self._parenthesize_unless_simple(n.cond),
-                "?",
-                self._parenthesize_unless_simple(n.iftrue),
-                ":",
-                self._parenthesize_unless_simple(n.iffalse),
-            )
-        )
+        """``c ? a : b``, an operand parenthesized where it binds no tighter (a conditional
+        operator on the right associates as C reads it)."""
+
+        def wrap(e, loose):
+            text = self.visit(e)
+            return f"({text})" if isinstance(e, loose) else text
+
+        return f"{wrap(n.cond, LOOSE)} ? {wrap(n.iftrue, LOOSE)} : {wrap(n.iffalse, LOOSE[1:])}"
 
     def visit_AttributeSpecifier(self, n):  # pylint: disable=invalid-name
         """``__attribute__((a, b))``"""
