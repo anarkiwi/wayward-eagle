@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wayward-eagle"
+version = "0.1.0"
+description = "Lower the cognitive complexity of C function bodies, keeping what they do"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Josh Bailey" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "black", "pylint"]
+
+[project.urls]
+Repository = "https://github.com/anarkiwi/wayward-eagle"
+
+[tool.setuptools]
+packages = ["wayward_eagle"]
+
+[tool.black]
+line-length = 100
+
+[tool.pylint.format]
+max-line-length = 100
