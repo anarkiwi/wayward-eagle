@@ -200,3 +200,53 @@ def casts(n, unit, implicit=False):
                 out.append((c, x.kind, frm, x.type))
                 frm = x.type
     return out
+
+
+LOGICAL = ("&&", "||")
+#: Expressions a sequence of logical operators continues through, as clang-tidy counts it.
+THROUGH = (
+    c_ast.BinaryOp,
+    c_ast.UnaryOp,
+    c_ast.Cast,
+    c_ast.TernaryOp,
+    c_ast.ArrayRef,
+    c_ast.StructRef,
+    c_ast.Assignment,
+    c_ast.ExprList,
+)
+
+
+def cognitive(n, nest=0, logic=None):
+    """SonarSource's cognitive complexity of ``n`` at nesting ``nest``, as clang-tidy's
+    ``readability-function-cognitive-complexity`` counts it: ``if``, ``?:``, ``switch`` and
+    loops one plus their nesting, ``else if``, ``else``, ``goto`` and each sequence of like
+    logical operators (``logic`` the one ``n`` is in) one; bodies one level deeper."""
+    if n is None:
+        return 0
+    if isinstance(n, c_ast.If):
+        return _if(n, nest, 1 + nest)
+    if isinstance(n, (*LOOPS, c_ast.Switch)):
+        heads = (n.init, n.cond, n.next) if isinstance(n, c_ast.For) else (n.cond,)
+        return 1 + nest + sum(cognitive(h, nest) for h in heads) + cognitive(n.stmt, nest + 1)
+    if isinstance(n, c_ast.TernaryOp):
+        arms = cognitive(n.iftrue, nest + 1, logic) + cognitive(n.iffalse, nest + 1, logic)
+        return 1 + nest + cognitive(n.cond, nest, logic) + arms
+    if isinstance(n, c_ast.BinaryOp) and n.op in LOGICAL:
+        out, logic = int(n.op != logic), n.op
+    else:
+        out = 1 if isinstance(n, c_ast.Goto) else 0
+        logic = logic if isinstance(n, THROUGH) else None
+    return out + sum(cognitive(k, nest, logic) for k in kids(n) if not isinstance(k, TYPES))
+
+
+def _if(n, nest, here):
+    """The complexity of ``if`` ``n`` counted ``here``, its ``else if`` chain one each; an
+    arm that is a bare ``goto`` adds nothing, as clang-tidy counts it."""
+    out = here + cognitive(n.cond, nest) + _arm(n.iftrue, nest + 1)
+    if isinstance(n.iffalse, c_ast.If):
+        return out + _if(n.iffalse, nest, 1)
+    return out + (1 + _arm(n.iffalse, nest + 1) if n.iffalse is not None else 0)
+
+
+def _arm(n, nest):
+    return 0 if isinstance(n, c_ast.Goto) else cognitive(n, nest)

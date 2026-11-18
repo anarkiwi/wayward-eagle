@@ -59,7 +59,8 @@ class Info:  # pylint: disable=too-few-public-methods,too-many-instance-attribut
     """What clang knows of a node: kind, type, implicit casts (innermost first), the canonical
     id of the declaration it references or declares, source range (expansion locations) and
     first token's spelling location, an explicit cast's kind, a literal's or constant's
-    value, and a declaration's ``DeclStmt`` (its begin, shared by ``int a, b;``)."""
+    value, a declaration's ``DeclStmt`` (its begin, shared by ``int a, b;``) and ``loc``
+    (where a declaration's name is)."""
 
     __slots__ = (
         "kind",
@@ -72,11 +73,13 @@ class Info:  # pylint: disable=too-few-public-methods,too-many-instance-attribut
         "cast",
         "value",
         "group",
+        "loc",
     )
 
     def __init__(self, kind, typ, begin, end, spelling):
         self.kind, self.type, self.begin, self.end, self.spelling = kind, typ, begin, end, spelling
         self.casts, self.ref, self.cast, self.value, self.group = (), None, None, None, None
+        self.loc = None
 
     @property
     def converted(self):
@@ -297,15 +300,15 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
         return b, b
 
     def _range(self, j):
-        """``(begin, end, spelling of begin)`` of JSON node ``j``, its location first."""
-        if "loc" in j:
-            self._loc(j["loc"])
+        """``(begin, end, spelling of begin, location)`` of JSON node ``j`` (a declaration's
+        location is its name's), its location first."""
+        loc = self._loc(j["loc"])[0] if "loc" in j else None
         r = j.get("range")
         if not r:
-            return None, None, None
+            return None, None, None, loc
         b, s = self._loc(r.get("begin"))
         e, _ = self._loc(r.get("end"))
-        return b, e, s
+        return b, e, s, loc
 
     def skip(self, j):
         """Track the locations of a JSON subtree not converted; record its declarations."""
@@ -377,8 +380,9 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
 
     def info(self, node, j, rng):
         """Record and return the :class:`Info` of ``node`` from JSON ``j`` at ``rng``."""
-        b, e, s = rng
+        b, e, s, loc = rng
         info = self.sema[node] = Info(j["kind"], _type(j), b, e, s)
+        info.loc = loc
         self._outermost(node, _expansion(info))
         if b is not None:
             node.coord = c_parser.Coord(b.file, b.line, b.col)
@@ -729,7 +733,7 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
 
     def opaque(self, j, rng):
         """An :class:`Opaque` node of a construct ``c_ast`` has none for."""
-        b, e, _ = rng
+        b, e = rng[0], rng[1]
         nodes = [x for x in (self.stmt(k) for k in j.get("inner", ())) if x is not None]
         text = None
         if b is not None and e is not None and not b.macro and not e.macro:

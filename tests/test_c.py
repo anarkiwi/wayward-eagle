@@ -197,3 +197,30 @@ def test_cli_reduce(tmp_path, capsys):
     out = tmp_path / "o.c"
     assert main(["reduce", str(path), "-o", str(out), "--status-type", "unsigned char"]) == 0
     assert "if (!p) {" in out.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "body, score",
+    [
+        ("if (g) { if (g > 1) { g++; } } else if (g < 0) { g--; } else { g = 0; }", 5),
+        ("while (g) { g = g ? 1 : 2; }", 1 + 2),
+        ("for (;;) { switch (g) { case 1: break; } }", 1 + 2),
+        ("do { g++; } while (g && g < 3 && g != 2 || g > 9);", 1 + 2),
+        ("if (!(g && g > 1) && g) { }", 1 + 1),
+        ("g = (g ? (g && g) : 2) && g;", 1 + 1),
+        ("g = (g && g) || (g && g);", 3),
+        ("g = f(g && g) && g;", 2),
+        ("l:; if (g) { goto l; }", 2),
+        ("l:; if (g) goto l; else goto l;", 2),
+        ("l:; while (g) goto l;", 2),
+        ("g = 1;", 0),
+    ],
+)
+def test_cognitive_complexity(tmp_path, body, score):
+    """SonarSource's rules as clang-tidy counts them: a bare ``goto`` arm of an ``if`` adds
+    nothing, and a sequence of logical operators continues through any expression but a
+    call."""
+    path = tmp_path / "t.c"
+    path.write_text(f"int g;\nint f(int);\nint h(void) {{ {body} return 0; }}\n", encoding="utf-8")
+    (f,) = c.load(path).functions
+    assert c.query.cognitive(f.body) == score

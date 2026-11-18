@@ -95,6 +95,7 @@ equality uses clang's declarations and types.
 | `reads(n)`, `writes(n)`, `names(n)` | variable names read, stored to, either |
 | `jumps(n)`, `labels(n)`, `targets(n)` | `goto`/`break`/`continue`/`return`; label names; `goto` targets |
 | `commas(n)` | comma expressions |
+| `cognitive(n)` | SonarSource's cognitive complexity as clang-tidy counts it (a bare `goto` arm of an `if` adds nothing; a sequence of logical operators continues through any expression but a call) |
 | `key(n, unit=None, by_name=False)`, `equal(a, b, unit=None)` | structural key and equality; with `unit`, names by declaration (`by_name`: by name and scope) and expressions by canonical type and implicit casts |
 
 ```python

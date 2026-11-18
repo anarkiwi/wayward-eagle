@@ -10,7 +10,6 @@ import json
 import multiprocessing
 import os
 import pathlib
-import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +19,7 @@ from typing import NamedTuple
 
 import clang_tidy
 from pycparser import c_ast
+import yaml
 from tqdm import tqdm
 
 from . import c
@@ -28,7 +28,6 @@ from .c import query as q
 COGNITIVE = "cognitive-complexity"
 #: The class of each clang-tidy check's diagnostics.
 TIDY = {
-    "readability-function-cognitive-complexity": COGNITIVE,
     "bugprone-branch-clone": "branch-clone",
     "readability-redundant-casting": "redundant-cast",
     "misc-redundant-expression": "redundant-expression",
@@ -53,21 +52,8 @@ AST = (
 )
 #: The fewest statements a repeated sequence holds.
 SEQUENCE = 2
-CLASSES = tuple(TIDY.values()) + AST
-CONFIG = json.dumps(
-    {
-        "Checks": ",".join(["-*", *TIDY]),
-        "CheckOptions": {
-            "readability-function-cognitive-complexity.Threshold": 0,
-            "readability-function-cognitive-complexity.DescribeBasicIncrements": False,
-        },
-    }
-)
-DIAG = re.compile(
-    r"^(?P<file>.+?):(?P<line>\d+):\d+: (?P<level>warning|error|note): (?P<msg>.*?)"
-    r"(?: \[(?P<check>[^\]]+)\])?$"
-)
-SCORE = re.compile(r"function '(\w+)' has cognitive complexity of (\d+)")
+CLASSES = (COGNITIVE, *TIDY.values(), *AST)
+CONFIG = json.dumps({"Checks": ",".join(["-*", *TIDY])})
 LABELS = (c_ast.Case, c_ast.Default)
 UNMOVED = (c_ast.Decl, c_ast.DeclList, c_ast.Label, c_ast.EmptyStatement)
 LOCALS = ("VarDecl", "ParmVarDecl")
@@ -559,39 +545,51 @@ class Unit:  # pylint: disable=too-many-instance-attributes
 
     # clang-tidy.
 
-    def tidy(self, args=()):
-        """Sites of clang-tidy's checks, and each function's cognitive complexity."""
-        return self.tidied(Tidy(self.path, args))
-
     def tidied(self, run):
-        """Sites and complexity of the clang-tidy run :class:`Tidy` ``run``."""
-        run.wait()
-        found, noted = [], False
-        for line in run.stdout.splitlines():
-            m = DIAG.match(line)
-            if m is None:
+        """Sites of the clang-tidy run :class:`Tidy` ``run``: each diagnostic of a check of
+        :data:`TIDY` in this file, the other lines of this file its notes point at its
+        detail; :class:`CensusError` for any error."""
+        diags = run.wait()
+        lines = [0, *(i + 1 for i, b in enumerate(self.c.text) if b == 10)]
+
+        def where(d):
+            here = d.get("FilePath") and real(d["FilePath"]) == self.path
+            return bisect_right(lines, d["FileOffset"]) if here else None
+
+        sites = []
+        for d in diags:
+            msg = d["DiagnosticMessage"]
+            if d.get("Level") == "Error":
+                raise CensusError(f"{msg.get('FilePath')}: {msg['Message']}")
+            line = where(msg)
+            if d["DiagnosticName"] not in TIDY or line is None:
                 continue
-            if m["level"] == "error":
-                raise CensusError(line)
-            here = real(m["file"]) == self.path
-            if m["level"] == "warning":
-                noted = here and m["check"] in TIDY
-                if noted:
-                    found.append((m["check"], int(m["line"]), m["msg"], set()))
-            elif noted and here and int(m["line"]) != found[-1][1]:
-                found[-1][3].add(int(m["line"]))
+            notes = {where(n) for n in d.get("Notes") or ()} - {None, line}
+            text = msg["Message"]
+            if notes:
+                text += ": lines " + ", ".join(map(str, sorted(notes)))
+            sites.append(Site(TIDY[d["DiagnosticName"]], self.function_at(line), line, text))
         if run.returncode:
             raise CensusError(run.stderr.strip())
+        return sites
+
+    def complexity(self):
+        """``(sites, {function: score})`` of each function's cognitive complexity
+        (:func:`wayward_eagle.c.query.cognitive`), those above zero, at its name."""
         sites, scores = [], {}
-        for check, line, msg, notes in found:
-            if check == "readability-function-cognitive-complexity":
-                name, score = SCORE.match(msg).groups()
-                scores[name] = int(score)
-                msg = score
-            elif notes:
-                msg += ": lines " + ", ".join(map(str, sorted(notes)))
-            sites.append(Site(TIDY[check], self.function_at(line), line, msg))
+        for f in self.functions:
+            score = q.cognitive(f.body)
+            if score:
+                name = f.decl.name
+                scores[name] = score
+                sites.append(Site(COGNITIVE, name, self.c.sema[f].loc.line, str(score)))
         return sites, scores
+
+    def tidy(self, args=()):
+        """Sites of clang-tidy's checks and of cognitive complexity, and each function's
+        cognitive complexity."""
+        sites, scores = self.complexity()
+        return self.tidied(Tidy(self.path, args)) + sites, scores
 
 
 # subsumed-cast.
@@ -610,48 +608,47 @@ class Int(NamedTuple):
         return self.lo <= other.lo and other.hi <= self.hi
 
 
-#: Each standard integer type's width macro in clang's predefined macros.
-WIDTHS = {
-    "signed char": "__CHAR_BIT__",
-    "unsigned char": "__CHAR_BIT__",
-    "char": "__CHAR_BIT__",
-    "short": "__SHRT_WIDTH__",
-    "unsigned short": "__SHRT_WIDTH__",
-    "int": "__INT_WIDTH__",
-    "unsigned int": "__INT_WIDTH__",
-    "long": "__LONG_WIDTH__",
-    "unsigned long": "__LONG_WIDTH__",
-    "long long": "__LLONG_WIDTH__",
-    "unsigned long long": "__LLONG_WIDTH__",
-    "__int128": None,
-    "unsigned __int128": None,
-    "_Bool": "__BOOL_WIDTH__",
-}
+#: The standard integer types by clang's canonical spelling, ``_Bool`` apart.
+INTEGERS = (
+    "char",
+    "signed char",
+    "unsigned char",
+    "short",
+    "unsigned short",
+    "int",
+    "unsigned int",
+    "long",
+    "unsigned long",
+    "long long",
+    "unsigned long long",
+    "__int128",
+    "unsigned __int128",
+)
+#: A translation unit whose enumerators are each type's width, and whether ``char`` is
+#: signed, as clang evaluates them for a target.
+PROBE = "enum {\n%s\n  char_signed = (char)-1 < 0\n};\n" % "\n".join(
+    ("#ifdef __SIZEOF_INT128__\n" if "__int128" in t else "")
+    + f"  w{k} = sizeof({t}) * __CHAR_BIT__,"
+    + ("\n#endif" if "__int128" in t else "")
+    for k, t in enumerate(INTEGERS)
+)
 
 
 @functools.cache
 def _model(target):
-    """``{canonical integer type: Int}`` of ``target``'s data model, from clang's predefined
-    macros; an enum is ``int``."""
-    run = subprocess.run(
-        [*c.command(target), "-dM", "-E", "-x", "c", os.devnull],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    macros = dict(
-        line.split(" ", 2)[1:] for line in run.stdout.splitlines() if line.count(" ") >= 2
-    )
-    out = {}
-    for name, macro in WIDTHS.items():
-        bits = int(macros[macro]) if macro else 128
-        if name == "_Bool":
-            out[name] = Int(0, 1, 1, False)
-            continue
-        signed = not name.startswith("unsigned") and (
-            name != "char" or "__CHAR_UNSIGNED__" not in macros
-        )
-        out[name] = _sized(bits, signed)
+    """``{canonical integer type: Int}`` of ``target``'s data model: the widths clang gives
+    the enumerators of :data:`PROBE`; an enum is ``int``."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = pathlib.Path(tmp) / "probe.c"
+        path.write_text(PROBE, encoding="utf-8")
+        unit = c.load(path, target=target)
+    (decl,) = unit.ast.ext
+    values = {e.name: int(unit.info(e.value).value) for e in decl.type.values.enumerators}
+    out = {"_Bool": Int(0, 1, 1, False)}
+    for k, name in enumerate(INTEGERS):
+        if f"w{k}" in values:
+            signed = not name.startswith("unsigned") and (name != "char" or values["char_signed"])
+            out[name] = _sized(values[f"w{k}"], signed)
     return out
 
 
@@ -872,28 +869,38 @@ def _switch_arms(n, unit):
 
 
 class Tidy:  # pylint: disable=too-few-public-methods
-    """clang-tidy's checks run on a file in the background, its output in a file until
-    :meth:`wait` (so a long report never blocks it)."""
+    """clang-tidy's checks run on a file in the background, its diagnostics exported as
+    YAML (``--export-fixes``) and read at :meth:`wait`."""
 
     def __init__(self, path, args=()):
-        self.out = tempfile.TemporaryFile("w+")
+        fd, self.fixes = tempfile.mkstemp(suffix=".yaml")
+        os.close(fd)
         self.proc = subprocess.Popen(  # pylint: disable=consider-using-with
-            [str(executable()), real(str(path)), "--quiet", f"--config={CONFIG}", "--", *args],
-            stdout=self.out,
+            [
+                str(executable()),
+                real(str(path)),
+                "--quiet",
+                f"--config={CONFIG}",
+                f"--export-fixes={self.fixes}",
+                "--",
+                *args,
+            ],
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
         )
-        self.stdout = self.stderr = ""
-        self.returncode = None
+        self.stderr, self.returncode, self.diagnostics = "", None, None
 
     def wait(self):
-        """Wait for the run to end; its ``stdout``, ``stderr`` and ``returncode`` then."""
+        """The run's diagnostics, once it ends (``stderr`` and ``returncode`` then)."""
         if self.returncode is None:
             self.stderr = self.proc.communicate()[1]
             self.returncode = self.proc.returncode
-            self.out.seek(0)
-            self.stdout = self.out.read()
-            self.out.close()
+            with open(self.fixes, encoding="utf-8") as f:
+                data = yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+            os.unlink(self.fixes)
+            self.diagnostics = (data or {}).get("Diagnostics") or []
+        return self.diagnostics
 
 
 def census(path, include=(), args=()):
@@ -906,8 +913,8 @@ def census(path, include=(), args=()):
         ast = unit.census()
     finally:
         run.wait()
-    sites, scores = unit.tidied(run)
-    sites += ast
+    sites, scores = unit.complexity()
+    sites += unit.tidied(run) + ast
     return Report(sorted(sites, key=lambda s: (s.line, s.cls, s.detail)), scores)
 
 

@@ -9,8 +9,8 @@ complexity). In Python, `wayward_eagle.census.census(path, include)` returns a `
 Two engines find sites, both pinned as dependencies so results do not depend on the host:
 
 - **clang-tidy** (`clang-tidy==23.1.4` wheel): one run per file with the checks below,
-  each diagnostic mapped to a class. Configuration is passed inline, so no `.clang-tidy`
-  file applies.
+  each diagnostic mapped to a class, read from the YAML it exports (`--export-fixes`), lines
+  from the file offsets. Configuration is passed inline, so no `.clang-tidy` file applies.
 - **AST**: checks written here over clang's AST as the [C layer](c.md) holds it (the
   `ziglang` wheel's clang, its JSON AST as `c_ast`, clang's types, implicit casts and
   declarations in the side table).
@@ -25,7 +25,7 @@ codebook does not code it.
 
 | Class | Engine | Check | Taxonomy |
 |---|---|---|---|
-| `cognitive-complexity` | clang-tidy | `readability-function-cognitive-complexity`, threshold 0; one site per function, its score the detail | C7 (a metric, not an issue) |
+| `cognitive-complexity` | AST | `wayward_eagle.c.query.cognitive`, SonarSource's rules as clang-tidy's `readability-function-cognitive-complexity` counts them (`tools/cognitive_check.py` compares the two); one site per function above zero, at its name, its score the detail | C7 (a metric, not an issue) |
 | `branch-clone` | clang-tidy | `bugprone-branch-clone` | C2.a |
 | `redundant-cast` | clang-tidy | `readability-redundant-casting` | C3.a |
 | `redundant-expression` | clang-tidy | `misc-redundant-expression` | C2.a |
@@ -71,8 +71,8 @@ type, whose removal leaves the value of the expression it is in unchanged by C's
 rules, decided from the operand type `E`, the cast type `T` and how the cast's value is used,
 in the data models of two parses of the file: the host's (`int` 32 bits on a 64-bit host)
 and `avr`'s (`int` 16 bits). Each parse resolves typedefs (`int32_t` is `int` on one, `long`
-on the other) and gives each standard type its width from that target's predefined width
-macros (`__INT_WIDTH__`, ...); a site is one on both, matched by where the cast is spelled
+on the other) and gives each standard type the width clang evaluates for it on that target
+(`sizeof(T) * __CHAR_BIT__` enumerators of a probe translation unit read from its AST); a site is one on both, matched by where the cast is spelled
 and expands. Conversion to `_Bool` (`IntegralToBoolean`) never wraps. The type a context
 converts the value to is the implicit cast clang applies to it:
 
