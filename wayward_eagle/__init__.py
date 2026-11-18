@@ -2,8 +2,10 @@
 
 from .cost import cost
 from .reduce import (
+    STATUS,
     THRESHOLD,
     Function,
+    Piece,
     calling,
     ending,
     extracted,
@@ -24,11 +26,14 @@ from .tree import (
     order,
     own,
     walk,
+    writes,
 )
 
 __all__ = [
     "CONTINUE",
     "Function",
+    "Piece",
+    "STATUS",
     "RETURN",
     "THRESHOLD",
     "assigned_first",
@@ -48,4 +53,5 @@ __all__ = [
     "sections",
     "tails",
     "walk",
+    "writes",
 ]
