@@ -56,11 +56,10 @@ class Cast(NamedTuple):
 
 
 class Info:  # pylint: disable=too-few-public-methods,too-many-instance-attributes
-    """What clang knows of a node: its clang kind, type, the implicit casts applied to its
-    value (innermost first), the canonical id of the declaration it references or declares,
-    its source range (expansion locations), the spelling location of its first token, an
-    explicit cast's kind, a literal's or constant expression's value, and a declaration's
-    declaration statement (the begin of the ``DeclStmt`` declaring several at once)."""
+    """What clang knows of a node: kind, type, implicit casts (innermost first), the canonical
+    id of the declaration it references or declares, source range (expansion locations) and
+    first token's spelling location, an explicit cast's kind, a literal's or constant's
+    value, and a declaration's ``DeclStmt`` (its begin, shared by ``int a, b;``)."""
 
     __slots__ = (
         "kind",
