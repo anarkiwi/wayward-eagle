@@ -8,6 +8,11 @@ cond)``, ``("loop", kind, cond, refs, body)`` (kind ``for``, ``while`` or ``do``
 
 from __future__ import annotations
 
+import re
+
+#: An assignment inside an expression: a name, then ``=`` that is no comparison.
+ASSIGN = re.compile(r"(?<![\w.>])(\w+)\s*=(?!=)")
+
 RETURN = ("j", "return;", frozenset())
 
 
@@ -141,3 +146,24 @@ def labels(items):
 def order(name):
     """A variable's sort key: its number after the prefix letter."""
     return (len(name), name)
+
+
+def _texts(st):
+    """The expression texts of statement ``st`` outside its nested statements."""
+    if st[0] == "a":
+        return [st[2]]
+    if st[0] in ("s", "if", "switch"):
+        return [st[1]]
+    return [st[2]] if st[0] == "loop" else []
+
+
+def writes(items):
+    """Every variable ``items`` set: assigned, or set by an assignment inside an
+    expression (a loop's step in its condition, a comma expression)."""
+    out = set()
+    for st in walk(items):
+        if st[0] == "a":
+            out.add(st[1])
+        for text in _texts(st):
+            out |= set(ASSIGN.findall(text))
+    return out

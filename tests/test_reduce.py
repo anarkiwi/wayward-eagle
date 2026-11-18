@@ -16,6 +16,7 @@ from wayward_eagle import (
     sections,
     tails,
     walk,
+    writes,
 )
 
 
@@ -201,7 +202,8 @@ def test_a_block_leaving_early_returns_its_exit():
 
 def test_a_block_setting_a_variable_used_after_returns_it():
     """A block setting one variable used after it returns it, its call assigning it; one
-    that also leaves early, falls into the next case, or that a goto outside enters, stays."""
+    that also leaves early, falls into the next case, or that a goto crosses the edge of,
+    stays."""
     fn = Function([], {"v1"}, True)
     got, _ = extracted("f", [], [iff("p", deep(6, a("v1", "p"))), s("w(v1);", "v1")], fn)
     assert got[1].ret == "v1" and got[1].items[-1] == ("j", "return v1;", frozenset())
@@ -209,7 +211,8 @@ def test_a_block_setting_a_variable_used_after_returns_it():
     both = [iff("p", deep(6, a("v1", "p"), RETURN)), s("w(v1);", "v1")]
     fall = [iff("p", deep(6, s("x();"), ("j", "__attribute__((fallthrough));", frozenset())))]
     entered = [iff("p", deep(6, label("L1"), s("x();"))), goto("L1")]
-    for items in (both, fall, entered):
+    left = [iff("p", deep(6, s("x();"), goto("L1"))), label("L1")]
+    for items in (both, fall, entered, left):
         assert len(extracted("f", [], items, fn)[0]) == 1
 
 
@@ -256,3 +259,22 @@ def test_loops_and_switches_cost_one_plus_their_depth():
     loop = ("loop", "for", "", frozenset(), [iff("p", [s("x();")])])
     switch = ("switch", "k", frozenset(), [((1,), [loop])])
     assert cost([loop]) == 1 + 2 and cost([switch], 1) == 2 + 3 + 4
+
+
+def test_writes_include_assignments_inside_expressions():
+    """A variable set by an assignment inside a loop's condition or a comma expression is
+    written, as an assigned one is; a comparison writes nothing."""
+    loop = ("loop", "do", "(v1 > 2) && (v1 = v1 - 1, v2 = v2 - 1, 1)", frozenset({"v1", "v2"}), [])
+    items = [a("v3", "p"), loop, iff("v4 == 1 && v5 <= 2", [s("x(v6 >= 1);")])]
+    assert writes(items) == {"v1", "v2", "v3"}
+    fn = Function([], {"v1", "v2"}, True)
+    got, _ = extracted("f", [], [iff("p", deep(6, loop)), s("w(v1);", "v1")], fn)
+    assert got[1].ret == "v1"
+
+
+def test_a_block_reading_a_parameter_takes_it():
+    """A block reading a parameter of its function that nothing else there reads still takes
+    it: the parameter is set on entry."""
+    fn = Function(["v1"], {"v1"}, True)
+    got, _ = extracted("f", ["v1"], [iff("p", deep(6, s("w(v1);", "v1")))], fn)
+    assert got[1].args == ["v1"]

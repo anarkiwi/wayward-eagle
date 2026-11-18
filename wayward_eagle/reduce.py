@@ -16,7 +16,7 @@ from .tree import (
     names_in,
     order,
     targets,
-    walk,
+    writes,
 )
 
 #: The cognitive complexity a function is left at (SonarQube's default for C): above it,
@@ -283,20 +283,22 @@ def _site(xname, call, refs, codes):
 def _extraction(xname, block, rest, fn):
     """``(call site, piece, status variable)`` of extracting ``block`` to ``xname`` from a
     function whose other statements are ``rest`` (:class:`Function` ``fn``), or None when it
-    cannot be (a goto outside enters it, it falls into the next case, it returns from a
+    cannot be (a goto crosses its edge, it falls into the next case, it returns from a
     function returning a value, or it both leaves early and sets a variable used after it,
     or sets more than one): its exits (:func:`_kinds`) become a status it returns, the one
     variable it sets that is used after it its value."""
     kinds = _kinds(block, At(fn.noreturn))
-    outs = sorted({st[1] for st in walk(block) if st[0] == "a"} & names_in(rest) & fn.local)
-    if kinds is None or labels(block) & targets(rest) or ("return" in kinds and not fn.void):
+    outs = sorted(writes(block) & names_in(rest) & fn.local)
+    crosses = labels(block) & targets(rest) or targets(block) - labels(block)
+    if kinds is None or crosses or ("return" in kinds and not fn.void):
         return None
     if (kinds and outs) or len(outs) > 1:
         return None
-    inputs = sorted(names_in(block) & names_in(rest) & fn.local, key=order)
+    inputs = sorted(names_in(block) & (names_in(rest) | set(fn.params)) & fn.local, key=order)
     call, refs = f"{xname}({', '.join(inputs)})", frozenset(inputs)
     if not kinds and not outs:
-        return [("s", f"{call};", refs)], Piece(xname, inputs, block), None
+        body = _recode(block, {}, RETURN, At(fn.noreturn))
+        return [("s", f"{call};", refs)], Piece(xname, inputs, body), None
     ret = outs[0] if outs else STATUS
     codes = {kind: c for c, kind in enumerate(sorted(kinds), 1)}
     body = _recode(block, codes, _end(ret), At(fn.noreturn))
@@ -326,7 +328,7 @@ def extracted(name, args, items, fn, ret=None):
     most (:func:`_best`) becomes ``NAME_xK`` and its call site; each extracted function in
     turn."""
     out, temps, k = [], set(), 0
-    fn = fn._replace(void=ret is None)
+    fn = fn._replace(void=ret is None, params=args)
     while cost(items) > THRESHOLD:
         best = _best(f"{name}_x{k + 1}", items, fn)
         if best is None:

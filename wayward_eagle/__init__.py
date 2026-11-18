@@ -26,6 +26,7 @@ from .tree import (
     order,
     own,
     walk,
+    writes,
 )
 
 __all__ = [
@@ -52,4 +53,5 @@ __all__ = [
     "sections",
     "tails",
     "walk",
+    "writes",
 ]
