@@ -224,3 +224,46 @@ def test_cognitive_complexity(tmp_path, body, score):
     path.write_text(f"int g;\nint f(int);\nint h(void) {{ {body} return 0; }}\n", encoding="utf-8")
     (f,) = c.load(path).functions
     assert c.query.cognitive(f.body) == score
+
+
+@pytest.mark.parametrize(
+    "node,want",
+    [
+        (
+            c_ast.BinaryOp("-", c_ast.BinaryOp("+", c_ast.ID("a"), c_ast.ID("b")), c_ast.ID("c")),
+            "a + b - c",
+        ),
+        (
+            c_ast.BinaryOp("-", c_ast.ID("a"), c_ast.BinaryOp("+", c_ast.ID("b"), c_ast.ID("c"))),
+            "a - (b + c)",
+        ),
+        (
+            c_ast.BinaryOp("<<", c_ast.BinaryOp(">>", c_ast.ID("a"), c_ast.ID("b")), c_ast.ID("c")),
+            "a >> b << c",
+        ),
+        (
+            c_ast.BinaryOp("==", c_ast.BinaryOp("!=", c_ast.ID("a"), c_ast.ID("b")), c_ast.ID("c")),
+            "(a != b) == c",
+        ),
+        (
+            c_ast.TernaryOp(
+                c_ast.BinaryOp(">", c_ast.ID("v"), c_ast.ID("k")),
+                c_ast.ID("x"),
+                c_ast.TernaryOp(c_ast.ID("c"), c_ast.ID("d"), c_ast.ID("e")),
+            ),
+            "v > k ? x : c ? d : e",
+        ),
+        (
+            c_ast.TernaryOp(
+                c_ast.TernaryOp(c_ast.ID("c"), c_ast.ID("d"), c_ast.ID("e")),
+                c_ast.Assignment("=", c_ast.ID("x"), c_ast.ID("y")),
+                c_ast.ID("z"),
+            ),
+            "(c ? d : e) ? (x = y) : z",
+        ),
+    ],
+)
+def test_parentheses_where_precedence_or_readers_need_them(node, want):
+    """Left operands of one precedence group associate unparenthesized; a conditional
+    operator's operands are parenthesized only where they bind no tighter."""
+    assert c.text(node) == want
