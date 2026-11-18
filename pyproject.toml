@@ -49,3 +49,6 @@ extension-pkg-allow-list = ["orjson"]
 
 [tool.pylint.format]
 max-line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

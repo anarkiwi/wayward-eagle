@@ -4,6 +4,8 @@ and the variable queries use clang's declarations and types instead of names."""
 
 from __future__ import annotations
 
+import copy
+
 from pycparser import c_ast
 
 #: Unary operators that store to their operand.
@@ -86,6 +88,43 @@ def key(n, unit=None, by_name=False):
     ):
         sub += tuple(key(c) for c in kids(n) if isinstance(c, TYPES))
     return (type(n).__name__, extra, sub)
+
+
+def replaced(n, f):
+    """``n`` with each node for which ``f`` gives a node replaced by it, outermost first; the
+    unchanged subtrees shared, nothing changed in place."""
+    got = f(n)
+    if got is not None:
+        return got
+    out = None
+    for name, child in n.children():
+        new = replaced(child, f)
+        if new is not child:
+            out = out or copy.copy(n)
+            attr, _, index = name.partition("[")
+            if index:
+                items = list(getattr(out, attr))
+                items[int(index[:-1])] = new
+                setattr(out, attr, items)
+            else:
+                setattr(out, attr, new)
+    return out or n
+
+
+def renamed(e, mapping):
+    """Expression ``e`` reading variable ``mapping[v]`` wherever it reads ``v``."""
+    skip = {
+        id(x.lvalue if isinstance(x, c_ast.Assignment) else x.name)
+        for x in walk(e)
+        if (isinstance(x, c_ast.Assignment) and x.op == "=") or isinstance(x, c_ast.FuncCall)
+    } | {id(x.field) for x in walk(e) if isinstance(x, c_ast.StructRef)}
+
+    def f(x):
+        if isinstance(x, c_ast.ID) and id(x) not in skip and x.name in mapping:
+            return c_ast.ID(mapping[x.name], x.coord)
+        return None
+
+    return replaced(e, f)
 
 
 def equal(a, b, unit=None):

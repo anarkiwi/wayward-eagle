@@ -389,3 +389,66 @@ def returning(value=None):
 def iff(cond, then, els=()):
     """``if (cond) { then } else { els }``."""
     return c_ast.If(cond, braced(list(then)), braced(list(els)))
+
+
+def swap(items, old, new):
+    """``items`` with the statement list ``old`` (``items`` itself, or one nested in it, by
+    identity) replaced by ``new``."""
+    if items is old:
+        return new
+    return mapped(items, lambda sub: swap(sub, old, new))
+
+
+#: Expression nodes that compute a value from variables and constants alone.
+PURE = (
+    c_ast.ID,
+    c_ast.Constant,
+    c_ast.BinaryOp,
+    c_ast.TernaryOp,
+    c_ast.Cast,
+    c_ast.Typename,
+    *q.TYPES,
+)
+
+
+def pure(e):
+    """Whether expression ``e`` is computed from variables and constants alone."""
+    return all(
+        isinstance(n, PURE) or (isinstance(n, c_ast.UnaryOp) and n.op in "-+~!") for n in q.walk(e)
+    )
+
+
+def dropped(items, spots):
+    """``items`` without the statements at ``spots`` (``{(id(list), index)}``)."""
+    out = []
+    for i, st in enumerate(items):
+        if (id(items), i) not in spots:
+            out.append(
+                rebuild(st, [dropped(s, spots) for s in children(st)]) if children(st) else st
+            )
+    return out
+
+
+def reheaded(st, exprs):
+    """A copy of ``st`` evaluating ``exprs`` in place of its :func:`heads`."""
+    if isinstance(st, c_ast.If):
+        return c_ast.If(exprs[0], st.iftrue, st.iffalse, st.coord)
+    if isinstance(st, (c_ast.While, c_ast.DoWhile, c_ast.Switch)):
+        return type(st)(exprs[0], st.stmt, st.coord)
+    if isinstance(st, c_ast.For):
+        it = iter(exprs)
+        init, cond, nxt = (None if x is None else next(it) for x in (st.init, st.cond, st.next))
+        return c_ast.For(init, cond, nxt, st.stmt, st.coord)
+    return exprs[0] if exprs else st
+
+
+def remap(items, f):
+    """``items`` with each statement ``st`` at ``(list, index)`` replaced by
+    ``f(list, index, st)``, its nested lists remapped first."""
+    out = []
+    for i, st in enumerate(items):
+        new = f(items, i, st)
+        if children(st):
+            new = rebuild(new, [remap(sub, f) for sub in children(st)])
+        out.append(new)
+    return out
