@@ -136,10 +136,13 @@ formatter alone. `Generator` subclasses pycparser's `CGenerator`:
 
 ## Reducing
 
-`reduce_function(fd, noreturn=frozenset(), status=None)` rewrites a `FuncDef`
-([rewrites](rewrites.md)) into `[FuncDef]`, the pieces (`static`) first and `fd`'s own last;
-`noreturn` names functions that never return, `status` is the type tree of exit codes
-(`int` by default). `prototypes(functions)` gives the pieces' declarations.
+`reduce_function(fd, noreturn=frozenset(), status=None, taken=frozenset())` rewrites a
+`FuncDef` ([rewrites](rewrites.md)) into `[FuncDef]`, the pieces (`static`) first and `fd`'s
+own last; `noreturn` names functions that never return, `status` is the type tree of exit
+codes (`int` by default), `taken` names the pieces may not take. `fd` needs no unit: types
+come from its declarations (locals may be declared without initializers anywhere in the
+body); each statement's `coord` is kept on the statements moved or rebuilt, and never
+compared. `prototypes(functions)` gives the pieces' declarations.
 `reduce_unit(unit, status=None, functions=None)` returns the file's text with each function
 (or each named in `functions`) replaced by its pieces and their prototypes, the rest as
 written.
@@ -147,3 +150,12 @@ written.
 ```
 wayward-eagle reduce FILE.c [-o OUT.c] [-I DIR] [--status-type T]
 ```
+
+Modules the reducer is built from, each over bare `c_ast`:
+
+| Module | What |
+|---|---|
+| `wayward_eagle.c.stmt` | the statement-list API: a body as nested statement lists (`block`, `braced`, `children`, `rebuild`, `remap`, `swap`, `dropped`, `heads`, `reheaded`), what they read and write (`names_in`, `reads_in`, `writes`, `own`, `assigned_first`, `order`), jumps (`ends_in_jump`, `is_jump`), `cost`, and builders (`iff`, `negate`, `call`, `returning`) |
+| `wayward_eagle.c.listflow` | the control flow graph of a statement list, keyed by statement position; liveness, available copies (of variables and integer constants), reachability; copy propagation, dead stores and unreached statements dropped |
+| `wayward_eagle.c.ints` | C integer arithmetic of constants and typed variables with a 16-bit or a 32-bit `int` |
+| `wayward_eagle.c.refine` | the readability rewrites ([refinement](rewrites.md#refinement)) |

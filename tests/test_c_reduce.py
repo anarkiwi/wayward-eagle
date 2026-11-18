@@ -345,3 +345,35 @@ def test_negation_turns_comparisons_round(cc):
     assert render.text(stmt.negate(a)) == "p >= q"
     assert render.text(stmt.negate(b)) == "p == 1"
     assert render.text(stmt.negate(st.cond)).startswith("!(")
+
+
+def test_any_coord_is_carried_and_never_compared(cc):
+    """Statements may carry any object as ``coord`` (one neither hashable nor comparable):
+    the reduced function renders as with plain coords and keeps them on what it moves."""
+
+    class Mark:  # pylint: disable=too-few-public-methods
+        """A provenance no rewrite may compare or hash."""
+
+        __hash__ = None
+
+        def __eq__(self, other):
+            raise AssertionError("coord compared")
+
+    src = "uint8_t v = 2; if (p) { x(); w(1); } else { y(); w(1); } for (;;) { w(v);"
+    f = cc.fn(src + " if (v == 0) break; v = v - 1; }")
+    plain = render_all(r.reduce_function(f))
+    marks = set()
+    for n in walk_all(f):
+        n.coord = Mark()
+        marks.add(id(n.coord))
+    got = r.reduce_function(f)
+    assert render_all(got) == plain
+    kept = {id(n.coord) for g in got for n in walk_all(g.body)}
+    assert len(kept & marks) > 5
+
+
+def walk_all(n):
+    """``n`` and every node under it."""
+    yield n
+    for _, c in n.children():
+        yield from walk_all(c)
