@@ -90,7 +90,8 @@ def sections(items, local, stops=never):
             continue
         before, rest, lab = items[start:i], items[i + 1 :], st.name
         shared = names_in(before) & names_in(rest) & local
-        if shared or "return" in _kinds(before, At(stops)):
+        kinds = _kinds(before, At(stops))
+        if shared or kinds is None or "return" in kinds:
             continue
         if targets(before) & (labels(rest) - {lab}):
             continue

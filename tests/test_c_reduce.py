@@ -24,6 +24,14 @@ def test_a_local_used_across_a_label_keeps_one_section(cc):
     assert len(r.sections(body, LOCAL)) == 1
 
 
+def test_a_fall_into_a_case_before_a_label_keeps_one_section(cc):
+    """A section whose exits include a fall into the next case is not cut off."""
+    body = cc.items(
+        "switch (p) { case 1: x(); __attribute__((fallthrough)); case 2: y(); } L1:; z();"
+    )
+    assert len(r.sections(body, set())) == 1
+
+
 def test_a_goto_past_the_label_keeps_one_section(cc):
     """A goto from before a label to one after it, or back, keeps the body whole."""
     past = cc.items("if (p) goto L2; L1:; x(); L2:; y();")
