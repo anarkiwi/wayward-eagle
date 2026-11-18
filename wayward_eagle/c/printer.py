@@ -94,8 +94,8 @@ class Generator(c_generator.CGenerator):
         operator on the right associates as C reads it)."""
 
         def wrap(e, loose):
-            text = self.visit(e)
-            return f"({text})" if isinstance(e, loose) else text
+            out = self.visit(e)
+            return f"({out})" if isinstance(e, loose) else out
 
         return f"{wrap(n.cond, LOOSE)} ? {wrap(n.iftrue, LOOSE)} : {wrap(n.iffalse, LOOSE[1:])}"
 
