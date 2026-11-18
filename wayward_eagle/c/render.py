@@ -8,6 +8,31 @@ import subprocess
 import clang_format
 from pycparser import c_ast, c_generator
 
+#: Binary operators by group, for :data:`BARE`.
+GROUPS = {
+    **dict.fromkeys(("*", "/", "%"), "mul"),
+    **dict.fromkeys(("+", "-"), "add"),
+    **dict.fromkeys(("<<", ">>"), "shift"),
+    **dict.fromkeys(("<", ">", "<=", ">=", "==", "!="), "cmp"),
+    **dict.fromkeys(("&", "^", "|"), "bit"),
+    "&&": "and",
+    "||": "or",
+}
+#: ``(operand group, operator group)`` pairs printed without parentheses when the operand
+#: binds tighter: those ``-Wparentheses`` and readers take as read.
+BARE = frozenset(
+    {("mul", "add")}
+    | {(a, b) for a in ("mul", "add", "shift") for b in ("cmp", "and", "or")}
+    | {("cmp", "and"), ("cmp", "or")}
+)
+#: Operators whose left operand of the same operator needs no parentheses.
+ASSOCIATIVE = frozenset(("+", "*", "&", "|", "^", "&&", "||", "-", "/", "%", "<<", ">>"))
+
+
+def _group(op):
+    return GROUPS.get(op, op)
+
+
 #: The clang-format style rendered C is laid out in.
 STYLE = "{BasedOnStyle: LLVM, MaxEmptyLinesToKeep: 0, RemoveParentheses: MultipleParentheses}"
 
@@ -30,18 +55,30 @@ class Generator(c_generator.CGenerator):
         return n in self.macros or super()._is_simple_node(n)
 
     def _operand(self, d, op, right):
-        """Operand ``d`` of binary operator ``op``, parenthesized only where C needs it."""
+        """Operand ``d`` of binary operator ``op``, parenthesized unless it binds tighter in
+        a pairing no compiler warns of (:data:`BARE`)."""
         if self._is_simple_node(d) or isinstance(d, (c_ast.UnaryOp, c_ast.Cast)):
             return self.visit(d)
         if isinstance(d, c_ast.BinaryOp):
             p, q = self.precedence_map[d.op], self.precedence_map[op]
-            if p > q or (p == q and not right):
+            if d.op == op and op in ASSOCIATIVE and not right:
+                return self.visit(d)
+            if p > q and (_group(d.op), _group(op)) in BARE:
                 return self.visit(d)
         return "(" + self.visit(d) + ")"
 
     def visit_BinaryOp(self, n):  # pylint: disable=invalid-name
         """``a op b``, casts and unary operators as tightly bound as they are."""
         return f"{self._operand(n.left, n.op, False)} {n.op} {self._operand(n.right, n.op, True)}"
+
+    def visit_Cast(self, n):  # pylint: disable=invalid-name
+        """``(T)e``, a cast or unary operand unparenthesized."""
+        inner = n.expr
+        if isinstance(inner, (c_ast.Cast, c_ast.UnaryOp)) or self._is_simple_node(inner):
+            operand = self.visit(inner)
+        else:
+            operand = "(" + self.visit(inner) + ")"
+        return "(" + self._generate_type(n.to_type, emit_declname=False) + ")" + operand
 
     def visit_TernaryOp(self, n):  # pylint: disable=invalid-name
         """``c ? a : b``, each operand parenthesized unless simple."""

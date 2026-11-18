@@ -53,7 +53,9 @@ def commas(n):
 
 
 def _attrs(n):
-    return tuple(tuple(v) if isinstance(v, list) else v for v in (getattr(n, a) for a in n.attr_names))
+    return tuple(
+        tuple(v) if isinstance(v, list) else v for v in (getattr(n, a) for a in n.attr_names)
+    )
 
 
 def key(n, unit=None, by_name=False):

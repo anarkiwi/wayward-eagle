@@ -266,7 +266,7 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
         self.path, self.file, self.line = path, "", 0
         self.sema, self.symbols, self.canon, self.types = {}, {}, {}, Types()
         self.texts, self.labels, self.gotos, self.function = {}, {}, [], None
-        self.macros = {}
+        self.macros, self.commas = {}, set()
 
     # Locations.
 
@@ -782,7 +782,9 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
         a, b = self._exprs(j)
         op = j["opcode"]
         if op == ",":
-            node = c_ast.ExprList([a, b])
+            left = a.exprs if isinstance(a, c_ast.ExprList) and a in self.commas else [a]
+            node = c_ast.ExprList([*left, b])
+            self.commas.add(node)
         else:
             node = c_ast.Assignment(op, a, b) if op == "=" else c_ast.BinaryOp(op, a, b)
         self.info(node, j, rng)

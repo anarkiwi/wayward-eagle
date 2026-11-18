@@ -10,7 +10,9 @@ def by_name(path):
     """``{file name: report}`` of a census JSON output."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return {str(pathlib.Path(p).relative_to(pathlib.Path(p).parents[2])): r for p, r in data.items()}
+    return {
+        str(pathlib.Path(p).relative_to(pathlib.Path(p).parents[2])): r for p, r in data.items()
+    }
 
 
 def main(old, new):

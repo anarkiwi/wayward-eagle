@@ -199,7 +199,9 @@ class Unit:  # pylint: disable=too-many-instance-attributes
         if isinstance(n, c_ast.Cast):
             got = Casts(self.c, self.models).subsumed_at(n, stack, self.fn)
             if got is not None:
-                casts.append((Site("subsumed-cast", self.fn.decl.name, self.line(n), got), _key(self.c, n)))
+                casts.append(
+                    (Site("subsumed-cast", self.fn.decl.name, self.line(n), got), _key(self.c, n))
+                )
         elif isinstance(n, c_ast.Goto):
             self.add("goto", n, n.name if isinstance(n.name, str) else "indirect")
         elif isinstance(n, c_ast.Switch) or (isinstance(n, c_ast.If) and not _else_if(n, stack)):
@@ -637,14 +639,18 @@ def _model(target):
         text=True,
         check=True,
     )
-    macros = dict(line.split(" ", 2)[1:] for line in run.stdout.splitlines() if line.count(" ") >= 2)
+    macros = dict(
+        line.split(" ", 2)[1:] for line in run.stdout.splitlines() if line.count(" ") >= 2
+    )
     out = {}
     for name, macro in WIDTHS.items():
         bits = int(macros[macro]) if macro else 128
         if name == "_Bool":
             out[name] = Int(0, 1, 1, False)
             continue
-        signed = not name.startswith("unsigned") and (name != "char" or "__CHAR_UNSIGNED__" not in macros)
+        signed = not name.startswith("unsigned") and (
+            name != "char" or "__CHAR_UNSIGNED__" not in macros
+        )
         out[name] = _sized(bits, signed)
     return out
 
