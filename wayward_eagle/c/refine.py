@@ -512,13 +512,14 @@ class Rotation:
         return body, steps, Count(v, lst[j].rvalue, mine[0], exit_), j
 
     def _plan(self, count, alone):
-        """``(head condition, last value)`` of ``count``, or None; its variable widened to
-        ``int`` when ``alone`` (mentioned by nothing else) and only that gives a condition."""
+        """``(head condition, last value)`` of ``count``, its values the same in each model
+        (as many as with a 16-bit ``int``), or None; its variable widened to ``int`` when
+        ``alone`` (mentioned by nothing else) and only that gives a condition."""
         types = [type_of(self.types.get(count.v), b) for b in MODELS]
-        runs = [count.sequence(t, b) for b, t in zip(MODELS, types)]
-        if None in runs or runs[0] != runs[1]:
+        first = count.sequence(types[0], MODELS[0])
+        if first is None or count.sequence(types[1], MODELS[1], len(first[0])) != first:
             return None
-        seq, end = runs[0]
+        seq, end = first
         cond = count.head(seq, end, types)
         wide = [Int(b, True) for b in MODELS]
         if cond is None and self.widen and alone and all(map(_widens, types, MODELS)):

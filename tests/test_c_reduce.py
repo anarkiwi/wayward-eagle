@@ -350,19 +350,3 @@ def test_negation_turns_comparisons_round(cc):
     assert render.text(stmt.negate(a)) == "p >= q"
     assert render.text(stmt.negate(b)) == "p == 1"
     assert render.text(stmt.negate(st.cond)).startswith("!(")
-
-
-def test_after_is_none_inside_loops_and_across_gotos(cc):
-    """The statements after a block: those after it, outward, and later switch arms."""
-    items = cc.items("if (p) { x(); } y(); switch (k) { case 1: if (q) { z(); } case 2: w(1); }")
-    first = stmt.children(items[0])[0]
-    assert cc.text(stmt.after(items, first)).startswith("{ y(); switch")
-    arm = stmt.children(items[2])[0]
-    inner = stmt.children(arm[0])[0]
-    assert "w(1);" in cc.text(stmt.after(items, inner))
-    looped = cc.items("for (;;) { if (p) { x(); } }")
-    body = stmt.children(looped[0])[0]
-    assert stmt.after(looped, stmt.children(body[0])[0]) is None
-    jumped = cc.items("L1:; if (p) { x(); } goto L1;")
-    assert stmt.after(jumped, stmt.children(jumped[1])[0]) is None
-    assert stmt.after(items, []) is None

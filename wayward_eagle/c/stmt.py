@@ -180,47 +180,6 @@ def names_in(items):
     return out
 
 
-def reads_in(items):
-    """Every variable ``items`` read, nested statements included."""
-    out = set()
-    for st in items:
-        out |= _tree(st)[0]
-    return out
-
-
-def after(items, chunk):
-    """The statements of ``items`` that may run after its nested statement list ``chunk``
-    finishes (those after it, outward, and the later arms of a ``switch``), or None when
-    control may come back before it (a loop around it, or a goto out of that region)."""
-    frames = _frames(items, chunk)
-    if frames is None:
-        return None
-    out = []
-    for lst, i, st, sub in reversed(frames):
-        if isinstance(st, LOOPS):
-            return None
-        if isinstance(st, c_ast.Switch):
-            subs = children(st)
-            k = next(j for j, x in enumerate(subs) if x is sub)
-            out += [x for later in subs[k + 1 :] for x in later]
-        out += lst[i + 1 :]
-    if targets(chunk + out) - labels(chunk + out):
-        return None
-    return out
-
-
-def _frames(items, chunk):
-    """``[(list, index, statement, nested list)]`` from ``items`` down to ``chunk``."""
-    for i, st in enumerate(items):
-        for sub in children(st):
-            if sub is chunk:
-                return [(items, i, st, sub)]
-            got = _frames(sub, chunk)
-            if got is not None:
-                return [(items, i, st, sub), *got]
-    return None
-
-
 def writes(items):
     """Every variable ``items`` set, in an assignment, increment or decrement anywhere in
     them (a loop's condition, a comma expression) included."""
