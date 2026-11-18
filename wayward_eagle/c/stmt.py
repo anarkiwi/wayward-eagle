@@ -5,6 +5,8 @@ and jump to: the form :mod:`wayward_eagle.c.reduce` rewrites. Every nested body 
 
 from __future__ import annotations
 
+import weakref
+
 from pycparser import c_ast
 
 from . import query as q
@@ -115,28 +117,50 @@ def heads(st):
     return [st]
 
 
+def _facts(st):
+    """``(reads, writes)`` of ``st`` outside its nested statement lists, memoized: nodes are
+    never changed once built."""
+    got = _FACTS.get(st)
+    if got is None:
+        r, w = set(), set()
+        for e in heads(st):
+            r |= q.reads(e)
+            w |= q.writes(e)
+        got = _FACTS[st] = (frozenset(r), frozenset(w))
+    return got
+
+
+def _tree(st):
+    """``(reads, writes)`` of ``st`` with its nested statements, memoized."""
+    got = _TREE.get(st)
+    if got is None:
+        r, w = _facts(st)
+        for sub in children(st):
+            for x in sub:
+                xr, xw = _tree(x)
+                r, w = r | xr, w | xw
+        got = _TREE[st] = (r, w)
+    return got
+
+
+_FACTS = weakref.WeakKeyDictionary()
+_TREE = weakref.WeakKeyDictionary()
+
+
 def own(st):
     """The variables ``st`` reads or writes outside its nested statement lists."""
-    out = set()
-    for e in heads(st):
-        out |= q.names(e)
-    return out
+    r, w = _facts(st)
+    return r | w
 
 
 def reads(st):
     """The variables ``st`` reads outside its nested statement lists."""
-    out = set()
-    for e in heads(st):
-        out |= q.reads(e)
-    return out
+    return _facts(st)[0]
 
 
 def own_writes(st):
     """The variables ``st`` writes outside its nested statement lists."""
-    out = set()
-    for e in heads(st):
-        out |= q.writes(e)
-    return out
+    return _facts(st)[1]
 
 
 def walk(items):
@@ -150,16 +174,17 @@ def walk(items):
 def names_in(items):
     """Every variable ``items`` read or write."""
     out = set()
-    for st in walk(items):
-        out |= own(st)
+    for st in items:
+        r, w = _tree(st)
+        out |= r | w
     return out
 
 
 def reads_in(items):
     """Every variable ``items`` read, nested statements included."""
     out = set()
-    for st in walk(items):
-        out |= reads(st)
+    for st in items:
+        out |= _tree(st)[0]
     return out
 
 
@@ -200,8 +225,8 @@ def writes(items):
     """Every variable ``items`` set, in an assignment, increment or decrement anywhere in
     them (a loop's condition, a comma expression) included."""
     out = set()
-    for st in walk(items):
-        out |= own_writes(st)
+    for st in items:
+        out |= _tree(st)[1]
     return out
 
 

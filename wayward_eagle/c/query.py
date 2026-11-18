@@ -175,3 +175,22 @@ def reads(n):
 def names(n):
     """The variables ``n`` reads or writes."""
     return reads(n) | writes(n)
+
+
+def casts(n, unit, implicit=False):
+    """``(node, kind, from, to)`` of each cast in ``n``, clang's cast kind and the
+    :class:`~wayward_eagle.c.Type` converted from and to: its explicit casts, or with
+    ``implicit`` the conversions clang applies to each node's value too."""
+    out = []
+    for c in walk(n):
+        info = unit.sema.get(c)
+        if info is None:
+            continue
+        if info.cast is not None and c.expr in unit.sema:
+            out.append((c, info.cast, unit.sema[c.expr].converted, info.type))
+        if implicit:
+            frm = info.type
+            for x in info.casts:
+                out.append((c, x.kind, frm, x.type))
+                frm = x.type
+    return out

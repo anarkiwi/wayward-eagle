@@ -134,6 +134,7 @@ TRANSPARENT = frozenset(("ParenExpr", "ConstantExpr", "FullExpr", "ExprWithClean
 #: How clang's type printer appends a function type's attributes.
 ATTRIBUTE = " __attribute__(("
 LABELS = (c_ast.Case, c_ast.Default)
+_tuple = tuple.__new__
 #: Type names clang prints that pycparser does not know, parsed as typedef names.
 BUILTIN = ("bool", "_Float16", "__fp16", "__bf16", "_Float128", "__float128")
 
@@ -174,7 +175,7 @@ class Types:
         """A fresh ``c_ast`` type tree of ``spelling`` with no declarator name."""
         got = self.cache.get(spelling)
         if got is None:
-            heads = "".join(f"typedef int {t};\n" for t in self.typedefs)
+            heads = "".join(f"typedef int {t};\n" for t in self.typedefs if t in spelling)
             try:
                 ast = _parser().parse(f"{heads}void __t(void) {{ sizeof({spelling}); }}")
                 got = ast.ext[-1].body.block_items[0].expr
@@ -237,6 +238,12 @@ class Unit:
         info = self.sema.get(node)
         return self.symbols.get(info.ref) if info is not None and info.ref else None
 
+    def range(self, node):
+        """``(begin, end)`` :class:`Loc` of ``node`` (expansion locations; ``end`` is the
+        start of the last token, ``end.offset + end.toklen`` past it)."""
+        info = self.sema[node]
+        return info.begin, info.end
+
     def line(self, node):
         """The line ``node`` begins on (at its macro expansion)."""
         return self.sema[node].begin.line
@@ -270,14 +277,12 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
 
     # Locations.
 
-    def _bare(self, b, macro=False):
-        f = b.get("file")
-        if f is not None:
-            self.file = f
-        line = b.get("line")
-        if line is not None:
-            self.line = line
-        return Loc(b["offset"], self.line, b["col"], b["tokLen"], self.file, macro)
+    def _bare(self, b, macro=False, arg=False):
+        if "file" in b:
+            self.file = b["file"]
+        if "line" in b:
+            self.line = b["line"]
+        return _tuple(Loc, (b["offset"], self.line, b["col"], b["tokLen"], self.file, macro, arg))
 
     def _loc(self, d):
         """``(expansion, spelling)`` of a JSON location."""
@@ -286,7 +291,7 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
         if "spellingLoc" in d:
             s = self._bare(d["spellingLoc"], True)
             x = d["expansionLoc"]
-            return self._bare(x, True)._replace(arg=x.get("isMacroArgExpansion", False)), s
+            return self._bare(x, True, "isMacroArgExpansion" in x), s
         b = self._bare(d)
         return b, b
 

@@ -13,6 +13,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 from bisect import bisect_right
 from collections import Counter
 from typing import NamedTuple
@@ -560,12 +561,11 @@ class Unit:  # pylint: disable=too-many-instance-attributes
 
     def tidy(self, args=()):
         """Sites of clang-tidy's checks, and each function's cognitive complexity."""
-        run = subprocess.run(
-            [str(executable()), self.path, "--quiet", f"--config={CONFIG}", "--", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        return self.tidied(Tidy(self.path, args))
+
+    def tidied(self, run):
+        """Sites and complexity of the clang-tidy run :class:`Tidy` ``run``."""
+        run.wait()
         found, noted = [], False
         for line in run.stdout.splitlines():
             m = DIAG.match(line)
@@ -873,13 +873,43 @@ def _switch_arms(n, unit):
     return [a[:-1] if isinstance(a[-1], c_ast.Break) else a for a in arms], sink
 
 
+class Tidy:
+    """clang-tidy's checks run on a file in the background, its output in a file until
+    :meth:`wait` (so a long report never blocks it)."""
+
+    def __init__(self, path, args=()):
+        self.out = tempfile.TemporaryFile("w+")
+        self.proc = subprocess.Popen(  # pylint: disable=consider-using-with
+            [str(executable()), real(str(path)), "--quiet", f"--config={CONFIG}", "--", *args],
+            stdout=self.out,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.stdout = self.stderr = ""
+        self.returncode = None
+
+    def wait(self):
+        """Wait for the run to end; its ``stdout``, ``stderr`` and ``returncode`` then."""
+        if self.returncode is None:
+            self.stderr = self.proc.communicate()[1]
+            self.returncode = self.proc.returncode
+            self.out.seek(0)
+            self.stdout = self.out.read()
+            self.out.close()
+
+
 def census(path, include=(), args=()):
     """The ``Report`` of C file ``path``, its headers found in directories ``include``."""
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
     args = [*(f"-I{d}" for d in include), *args]
-    unit = Unit(path, args)
-    sites, scores = unit.tidy(args)
-    sites += unit.census()
+    run = Tidy(path, args)
+    try:
+        unit = Unit(path, args)
+        ast = unit.census()
+    finally:
+        run.wait()
+    sites, scores = unit.tidied(run)
+    sites += ast
     return Report(sorted(sites, key=lambda s: (s.line, s.cls, s.detail)), scores)
 
 

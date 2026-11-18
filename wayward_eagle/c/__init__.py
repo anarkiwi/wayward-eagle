@@ -1,4 +1,5 @@
-"""wayward-eagle's C layer: clang's AST of a C file as pycparser ``c_ast`` (docs/c.md)."""
+"""wayward-eagle's C layer: clang's AST of a C file as pycparser ``c_ast``, clang's semantics
+in a side table, queries over the nodes, a renderer, and the reducer (docs/c.md)."""
 
 from .front import (
     HOST,
@@ -15,11 +16,34 @@ from .front import (
     dump,
     load,
 )
+from .query import (
+    arguments,
+    callee,
+    calls,
+    casts,
+    commas,
+    equal,
+    jumps,
+    key,
+    kids,
+    labels,
+    names,
+    reads,
+    statements,
+    stored,
+    subscripts,
+    targets,
+    variable,
+    walk,
+    writes,
+)
+from .reduce import THRESHOLD, prototypes, reduce_function, reduce_unit
 from .render import Generator, format_c, render, text
 
 __all__ = [
     "HOST",
     "NARROW",
+    "THRESHOLD",
     "Cast",
     "CError",
     "Generator",
@@ -29,10 +53,32 @@ __all__ = [
     "Symbol",
     "Type",
     "Unit",
+    "arguments",
+    "callee",
+    "calls",
+    "casts",
     "command",
+    "commas",
     "dump",
+    "equal",
     "format_c",
+    "jumps",
+    "key",
+    "kids",
+    "labels",
     "load",
+    "names",
+    "prototypes",
+    "reads",
+    "reduce_function",
+    "reduce_unit",
     "render",
+    "statements",
+    "stored",
+    "subscripts",
+    "targets",
     "text",
+    "variable",
+    "walk",
+    "writes",
 ]

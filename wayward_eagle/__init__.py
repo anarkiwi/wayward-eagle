@@ -1,5 +1,6 @@
 """wayward-eagle: lower the cognitive complexity of C function bodies, keeping what they do."""
 
+from . import c
 from .cost import cost
 from .reduce import (
     STATUS,
@@ -30,6 +31,7 @@ from .tree import (
 )
 
 __all__ = [
+    "c",
     "CONTINUE",
     "Function",
     "Piece",
