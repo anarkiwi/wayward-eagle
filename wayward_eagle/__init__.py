@@ -1,59 +1,6 @@
-"""wayward-eagle: lower the cognitive complexity of C function bodies, keeping what they do."""
+"""wayward-eagle: lower the cognitive complexity of C functions, keeping what they do, and
+census C readability defects."""
 
 from . import c
-from .cost import cost
-from .reduce import (
-    STATUS,
-    THRESHOLD,
-    Function,
-    Piece,
-    calling,
-    ending,
-    extracted,
-    flattened,
-    guarded,
-    reduced,
-    returning,
-    sections,
-    tails,
-)
-from .tree import (
-    CONTINUE,
-    RETURN,
-    assigned_first,
-    children,
-    ends_in_jump,
-    names_in,
-    order,
-    own,
-    walk,
-    writes,
-)
 
-__all__ = [
-    "c",
-    "CONTINUE",
-    "Function",
-    "Piece",
-    "STATUS",
-    "RETURN",
-    "THRESHOLD",
-    "assigned_first",
-    "calling",
-    "children",
-    "cost",
-    "ending",
-    "ends_in_jump",
-    "extracted",
-    "flattened",
-    "guarded",
-    "names_in",
-    "order",
-    "own",
-    "reduced",
-    "returning",
-    "sections",
-    "tails",
-    "walk",
-    "writes",
-]
+__all__ = ["c"]

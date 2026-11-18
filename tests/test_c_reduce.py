@@ -1,66 +1,10 @@
-"""The rewrites over ``c_ast``: each test of test_reduce.py's tuple rewrites, on C parsed by
-clang, asserting the same result; then whole functions and files."""
+"""The rewrites over ``c_ast``, on C parsed by clang; then whole functions and files."""
 
-import pytest
 from pycparser import c_ast
 
-from wayward_eagle.c import front, printer as render, stmt
+from conftest import LOCAL, deep
+from wayward_eagle.c import listflow as flow, front, printer as render, stmt
 from wayward_eagle.c import reduce as r
-
-HEAD = (
-    "void x(void); void y(void); void z(void); void w(int); int g(void);\n"
-    "__attribute__((noreturn)) void trap(int);\n"
-    "int p, q, k, c0, c1, c2, c3, c4, c5, c6;\n"
-)
-LOCALS = "int v1, v2, v3, v4, v5, v6;\n"
-
-
-class C:
-    """C function bodies parsed by clang, in the reducer's statement-list form."""
-
-    def __init__(self, tmp_path):
-        self.dir, self.n = tmp_path, 0
-
-    def unit(self, src):
-        """The unit of C ``src`` after the common declarations."""
-        self.n += 1
-        path = self.dir / f"t{self.n}.c"
-        path.write_text(HEAD + src + "\n", encoding="utf-8")
-        return front.load(path)
-
-    def fn(self, body, sig="void f(void)"):
-        """The ``FuncDef`` of ``sig`` with ``body``."""
-        return self.unit(f"{sig} {{ {body} }}").functions[-1]
-
-    def items(self, body, sig="void f(void)"):
-        """The statement list of ``body``, its locals hoisted."""
-        return r._normal(  # pylint: disable=protected-access
-            stmt.block(self.fn(LOCALS + body, sig).body), {}
-        )
-
-    def text(self, items):
-        """``items`` as one line of C."""
-        return " ".join(render.text(stmt.braced(list(items))).split())
-
-    def same(self, items, body):
-        """Whether ``items`` are the statements of C ``body``."""
-        return self.text(items) == self.text(self.items(body))
-
-
-@pytest.fixture(name="cc")
-def fixture_cc(tmp_path):
-    """A :class:`C` writing under ``tmp_path``."""
-    return C(tmp_path)
-
-
-def deep(n, body):
-    """``n`` nested ``if`` statements around C ``body``."""
-    for k in range(n):
-        body = f"if (c{k}) {{ {body} }}"
-    return body
-
-
-LOCAL = {"v1", "v2", "v3", "v4", "v5", "v6"}
 
 
 def test_a_label_no_local_crosses_cuts_the_body(cc):
@@ -78,6 +22,14 @@ def test_a_local_used_across_a_label_keeps_one_section(cc):
     """A local read after the label it is set before keeps the body whole."""
     body = cc.items("v1 = p; L1:; w(v1);")
     assert len(r.sections(body, LOCAL)) == 1
+
+
+def test_a_fall_into_a_case_before_a_label_keeps_one_section(cc):
+    """A section whose exits include a fall into the next case is not cut off."""
+    body = cc.items(
+        "switch (p) { case 1: x(); __attribute__((fallthrough)); case 2: y(); } L1:; z();"
+    )
+    assert len(r.sections(body, set())) == 1
 
 
 def test_a_goto_past_the_label_keeps_one_section(cc):
@@ -192,12 +144,19 @@ def test_a_block_leaving_early_returns_its_exit(cc):
 
 
 def test_a_block_setting_a_variable_used_after_returns_it(cc):
-    """A block setting one variable used after it returns it, its call assigning it; one
-    that also leaves early, falls into the next case, or that a goto crosses, stays."""
+    """A block setting one variable used after it returns it, its call assigning it, and
+    takes it too when some path through it leaves it unset; one that also leaves early,
+    falls into the next case, or that a goto crosses, stays."""
     fn = r.Function([], LOCAL, True)
     got, _ = r.extracted("f", [], cc.items("if (p) { " + deep(6, "v1 = p;") + " } w(v1);"), fn)
     assert got[1].ret == "v1" and cc.text(got[1].items).endswith("return v1; }")
-    assert "v1 = f_x1();" in cc.text(got[0].items)
+    assert "v1 = f_x1(v1);" in cc.text(got[0].items)
+    every = cc.items("if (p) { v1 = q; x(); } w(v1);")
+    chunk = stmt.children(every[0])[0]
+    site, piece, _ = r._extraction(  # pylint: disable=protected-access
+        "f_x1", chunk, stmt.swap(every, chunk, []), fn, frozenset(), flow.Graph(every)
+    )
+    assert cc.text(site) == "{ v1 = f_x1(); }" and piece.args == []
     both = cc.items("if (p) { " + deep(6, "v1 = p; return;") + " } w(v1);")
     fall = cc.items(
         "switch (k) { case 1: if (p) { "
@@ -219,15 +178,15 @@ def test_a_function_reduces_to_sections_tails_and_extractions(cc):
         "v1 = p; if (v1) goto L1; w(v1); L1:; x(); L2:; v2 = p; if (v2) goto L3; w(v2);"
         " L3:; w(v2 + 1);"
     )
-    pieces, n, temps = r.reduced(body, "f", r.Function(["p"], LOCAL, True))
-    assert n == 3 and not temps
+    pieces, secs, temps = r.reduced(body, "f", r.Function(["p"], LOCAL, True))
+    assert secs == ["f_1", "f_2", "f_3"] and not temps
     assert [x.name for x in pieces] == ["f_1", "f_2", "f_3", "f_3_L3"]
     tail = {x.name: x for x in pieces}["f_3_L3"]
     assert tail.args == ["p", "v2"] and cc.text(tail.items) == "{ w(v2 + 1); }"
     kept, one, _ = r.reduced(
         cc.items("return 0;", "int g2(void)"), "g", r.Function([], set(), False)
     )
-    assert one == 1 and len(kept) == 1 and kept[0].ret == "status"
+    assert one == ["g"] and len(kept) == 1 and kept[0].ret == "status"
 
 
 def test_assignment_comes_before_every_read_on_every_path(cc):
@@ -265,6 +224,7 @@ def test_writes_include_assignments_inside_expressions(cc):
         " if (v4 == 1 && v5 <= 2) { w(v6 >= 1); } v4++; v5 += 1;"
     )
     assert stmt.writes(items) == {"v1", "v2", "v3", "v4", "v5"}
+    assert stmt.reads_in(items) == {"p", "v1", "v2", "v4", "v5", "v6"}
     fn = r.Function([], LOCAL, True)
     got, _ = r.extracted(
         "f",
@@ -298,15 +258,18 @@ def test_an_exit_going_where_the_block_ends_is_its_end(cc):
 
 
 def test_extraction_outputs_are_what_runs_after_reads(cc):
-    """A variable a block sets that only statements before it mention is no output; inside
-    a loop any mention makes it one, the block returning it."""
+    """A variable a block sets is an output only when live on leaving it: not when only
+    statements before it read it, nor when each iteration of a loop around it sets it
+    first; a read in the next iteration makes it one."""
     fn = r.Function([], LOCAL, True)
     got, _ = r.extracted(
         "f", [], cc.items("v1 = 0; if (p) { " + deep(6, "v1 = p; w(v1);") + " } y();"), fn
     )
     assert got[1].ret is None
     looped = cc.items("for (;;) { v1 = 0; if (p) { " + deep(6, "v1 = p; w(v1);") + " } }")
-    assert [x.ret for x in r.extracted("f", [], looped, fn)[0][1:]] == ["v1"]
+    assert [x.ret for x in r.extracted("f", [], looped, fn)[0][1:]] == [None]
+    carried = cc.items("for (;;) { w(v1); if (p) { " + deep(6, "v1 = p; w(v1);") + " } }")
+    assert [x.ret for x in r.extracted("f", [], carried, fn)[0][1:]] == ["v1"]
 
 
 def render_all(fs, unit=None):
@@ -315,8 +278,9 @@ def render_all(fs, unit=None):
 
 
 def test_reduce_function_declares_each_piece_and_keeps_its_signature(cc):
-    """A reduced function keeps its own declaration last; its pieces are static, declare
-    the locals they use where they are set, and void the parameters they ignore."""
+    """A reduced function keeps its own declaration last and voids the parameters it
+    ignores; its pieces are static, take no parameter they ignore, and declare the locals
+    they use where they are set."""
     f = cc.fn(
         "int v1 = p; if (v1) goto L1; w(v1); L1:; int v2 = q; if (v2) { "
         + deep(6, "w(v2);")
@@ -326,7 +290,7 @@ def test_reduce_function_declares_each_piece_and_keeps_its_signature(cc):
     got = r.reduce_function(f)
     assert got[-1].decl is f.decl and len(got) > 2
     text = render_all(got)
-    assert "static void f_1(int a);" in text and "(void)a;" in text
+    assert "static void f_1(void);" in text and "(void)a;" in text and "f_1();" in text
     assert "int v1 = p;" in text
 
 
@@ -382,12 +346,6 @@ def test_declare_places_each_local_where_it_is_set(cc):
     assert "if (p) { int v1 = p;" in got and got.startswith("{ int v2;") and "int v3 = 3;" in got
 
 
-def test_unstored_drops_dead_pure_stores_to_locals_only(cc):
-    """A pure value stored to a local nothing reads is dropped; a global's store stays."""
-    items = cc.items("v1 = 0; p = 0; v2 = g(); w(v3);")
-    assert cc.same(r.unstored(items, LOCAL), "p = 0; v2 = g(); w(v3);")
-
-
 def test_negation_turns_comparisons_round(cc):
     """``!`` is removed, a comparison turned round, anything else negated."""
     (st,) = cc.items("if ((p < q) && !(p == 1)) { }")
@@ -397,17 +355,33 @@ def test_negation_turns_comparisons_round(cc):
     assert render.text(stmt.negate(st.cond)).startswith("!(")
 
 
-def test_after_is_none_inside_loops_and_across_gotos(cc):
-    """The statements after a block: those after it, outward, and later switch arms."""
-    items = cc.items("if (p) { x(); } y(); switch (k) { case 1: if (q) { z(); } case 2: w(1); }")
-    first = stmt.children(items[0])[0]
-    assert cc.text(stmt.after(items, first)).startswith("{ y(); switch")
-    arm = stmt.children(items[2])[0]
-    inner = stmt.children(arm[0])[0]
-    assert "w(1);" in cc.text(stmt.after(items, inner))
-    looped = cc.items("for (;;) { if (p) { x(); } }")
-    body = stmt.children(looped[0])[0]
-    assert stmt.after(looped, stmt.children(body[0])[0]) is None
-    jumped = cc.items("L1:; if (p) { x(); } goto L1;")
-    assert stmt.after(jumped, stmt.children(jumped[1])[0]) is None
-    assert stmt.after(items, []) is None
+def test_any_coord_is_carried_and_never_compared(cc):
+    """Statements may carry any object as ``coord`` (one neither hashable nor comparable):
+    the reduced function renders as with plain coords and keeps them on what it moves."""
+
+    class Mark:  # pylint: disable=too-few-public-methods
+        """A provenance no rewrite may compare or hash."""
+
+        __hash__ = None
+
+        def __eq__(self, other):
+            raise AssertionError("coord compared")
+
+    src = "uint8_t v = 2; if (p) { x(); w(1); } else { y(); w(1); } for (;;) { w(v);"
+    f = cc.fn(src + " if (v == 0) break; v = v - 1; }")
+    plain = render_all(r.reduce_function(f))
+    marks = set()
+    for n in walk_all(f):
+        n.coord = Mark()
+        marks.add(id(n.coord))
+    got = r.reduce_function(f)
+    assert render_all(got) == plain
+    kept = {id(n.coord) for g in got for n in walk_all(g.body)}
+    assert len(kept & marks) > 5
+
+
+def walk_all(n):
+    """``n`` and every node under it."""
+    yield n
+    for _, c in n.children():
+        yield from walk_all(c)

@@ -1,4 +1,3 @@
-# pylint: disable=duplicate-code
 """Rewrites of a C function (a ``c_ast.FuncDef``) that lower its cognitive complexity and keep
 what it does: sections, tails, early exits, flattened arms and extracted blocks
 (docs/rewrites.md), over the statement lists of :mod:`wayward_eagle.c.stmt`."""
@@ -6,14 +5,16 @@ what it does: sections, tails, early exits, flattened arms and extracted blocks
 from __future__ import annotations
 
 import copy
+from itertools import chain, count
 from typing import Callable, NamedTuple
 
 from pycparser import c_ast
 
 from . import query as q
+from .listflow import Graph, propagated, reachable, unstored
+from .refine import Rotation, refined, trimmed
 from .stmt import (
     LABELS,
-    after,
     arms,
     assigned_first,
     block,
@@ -22,18 +23,20 @@ from .stmt import (
     children,
     cost,
     ends_in_jump,
+    heads,
     iff,
     is_fallthrough,
     is_goto,
     labels,
-    mapped,
     names_in,
     negate,
     order,
     own,
-    reads_in,
     rebuild,
+    reheaded,
+    remap,
     returning,
+    swap,
     targets,
     writes,
 )
@@ -51,12 +54,19 @@ def never(_st):
 
 class Function(NamedTuple):
     """What the rewrites know of a C function: its parameters, its other variables, whether
-    it returns nothing, and whether a statement is a call that never returns."""
+    it returns nothing, whether a statement is a call that never returns, and the names its
+    pieces may not take."""
 
     params: list
     local: set
     void: bool
     noreturn: Callable = never
+    taken: frozenset = frozenset()
+
+
+def fresh(base, taken):
+    """``base``, or ``BASE_K`` for the least ``K`` from 2 when ``base`` is in ``taken``."""
+    return next(n for n in chain([base], (f"{base}_{k}" for k in count(2))) if n not in taken)
 
 
 class Piece(NamedTuple):
@@ -69,17 +79,21 @@ class Piece(NamedTuple):
     ret: str | None = None
 
 
-def sections(items, local):
+def sections(items, local, stops=never):
     """``[(label, items)]`` of a function body cut at each top-level label no variable of
-    ``local`` is used across and no goto crosses but into it from before: each section is
-    a function of its own (the label ending the section before it, none after the last)."""
+    ``local`` is used across, no goto crosses but into it from before, and that no return
+    before it (but one after a call ``stops`` holds) skips: each section a function of its
+    own (the label ending the section before it, none after the last)."""
     out, start = [], 0
     for i, st in enumerate(items):
         if not isinstance(st, c_ast.Label):
             continue
         before, rest, lab = items[start:i], items[i + 1 :], st.name
         shared = names_in(before) & names_in(rest) & local
-        if shared or targets(before) & (labels(rest) - {lab}):
+        kinds = _kinds(before, At(stops))
+        if shared or kinds is None or "return" in kinds:
+            continue
+        if targets(before) & (labels(rest) - {lab}):
             continue
         if targets(rest) & (labels(before) | {lab}):
             continue
@@ -91,7 +105,7 @@ def sections(items, local):
 def tails(items, local, make, stops=None):
     """``(head, [(label, items, params)])`` of a function body: from its last top-level label
     back, each label nothing after it jumps back before starts a tail taking the variables
-    of ``local`` it reads before setting them; gotos to later tails and the fall into the
+    of ``local`` live into it; gotos to later tails and the fall into the
     next are those tails' calls (``make(label, params)``)."""
     out, refs = [], {}
     while True:
@@ -107,24 +121,25 @@ def tails(items, local, make, stops=None):
         if out:
             body = [*body, make(out[0][0], refs[out[0][0]])]
         live = names_in(body) & names_in(before) & local
-        params = sorted((v for v in live if not assigned_first(body, v, stops)), key=order)
+        params = sorted(live & Graph(body, stops).live_in(), key=order)
         refs[lab] = params
         out.insert(0, (lab, rest, params))
         items = before
 
 
 def reduced(body, name, fn):
-    """``([Piece], sections, status variables)`` of the statements ``body`` of C function
-    ``name`` (:class:`Function` ``fn``): a function returning nothing cut into sections
-    (:func:`sections`, ``NAME_K``, called in turn), then each section's pieces."""
-    parts = sections(body, fn.local) if fn.void else [(None, body)]
-    pieces, temps = [], set()
+    """``([Piece], [section name], status variables)`` of the statements ``body`` of C
+    function ``name`` (:class:`Function` ``fn``): a function returning nothing cut into
+    sections (:func:`sections`, ``NAME_K``, called in turn), then each section's pieces."""
+    parts = sections(body, fn.local, fn.noreturn) if fn.void else [(None, body)]
+    pieces, temps, names = [], set(), []
     for k, (lab, items) in enumerate(parts, 1):
-        sec = name if len(parts) == 1 else f"{name}_{k}"
+        sec = name if len(parts) == 1 else fresh(f"{name}_{k}", fn.taken)
         got, more = _pieces(sec, returning_at(items, lab) if lab else items, fn)
         pieces += got
         temps |= more
-    return pieces, len(parts), temps
+        names.append(sec)
+    return pieces, names, temps
 
 
 def _chain(sec, items, fn):
@@ -134,16 +149,16 @@ def _chain(sec, items, fn):
     params = fn.params
 
     def make(t, ps):
-        return call(f"{sec}_{t}", params + ps)
+        return call(fresh(f"{sec}_{t}", fn.taken), params + ps)
 
-    first, chain = tails(items, fn.local, make, fn.noreturn) if fn.void else (items, [])
-    calls = {t: make(t, ps) for t, _, ps in chain}
-    seq = [(sec, params, first), *((f"{sec}_{t}", params + ps, b) for t, b, ps in chain)]
+    first, links = tails(items, fn.local, make, fn.noreturn) if fn.void else (items, [])
+    calls = {t: make(t, ps) for t, _, ps in links}
+    seq = [(sec, params, first), *((q.callee(calls[t]), params + ps, b) for t, b, ps in links)]
     out = []
     for j, (name, args, body) in enumerate(seq):
         body = calling(body, calls)
-        if j < len(chain) and not ends_in_jump(body):
-            body = [*body, calls[chain[j][0]]]
+        if j < len(links) and not ends_in_jump(body):
+            body = [*body, calls[links[j][0]]]
         out.append((name, args, body))
     return out
 
@@ -252,11 +267,6 @@ def _blocks(items, depth=0, same=frozenset()):
             yield from _blocks(sub, depth + 1, inner)
 
 
-def _swap(items, old, new):
-    """``items`` with the nested statement list ``old`` (by identity) replaced by ``new``."""
-    return mapped(items, lambda sub: new if sub is old else _swap(sub, old, new))
-
-
 def _end(ret):
     """A fresh jump ending a function that returns ``ret`` (:class:`Piece`)."""
     if ret is None:
@@ -280,16 +290,14 @@ def _site(xname, site, codes):
 
 
 def _extraction(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
-    xname, chunk, rest, fn, same=frozenset(), whole=None
+    xname, chunk, rest, fn, same=frozenset(), graph=None
 ):
     """``(call site, piece, status variable)`` of extracting ``chunk`` to ``xname`` from a
-    function whose other statements are ``rest``, or None when a goto crosses its edge, it
-    falls into the next case, returns a value, or sets more than one variable used after it
-    or one and leaves early; an exit of a kind in ``same`` goes where its end does. The
-    variables used after it are those statements of ``whole`` running after it read."""
+    function whose other statements are ``rest`` (control flow ``graph``), or None when a
+    goto crosses its edge, it falls into the next case, returns a value, or sets more than
+    one variable live on leaving it, or one and leaves early to elsewhere than its end."""
     kinds = _kinds(chunk, At(fn.noreturn))
-    later = after(whole, chunk) if whole is not None else None
-    used = names_in(rest) if later is None else reads_in(later)
+    used = names_in(rest) if graph is None else graph.leaving(chunk)
     outs = sorted(writes(chunk) & used & fn.local)
     if kinds is None or labels(chunk) & targets(rest) or targets(chunk) - labels(chunk):
         return None
@@ -298,30 +306,31 @@ def _extraction(  # pylint: disable=too-many-arguments,too-many-positional-argum
         return None
     if (kinds and outs) or len(outs) > 1:
         return None
-    shared = names_in(chunk) & (names_in(rest) | set(fn.params)) & fn.local
-    inputs = sorted((v for v in shared if not assigned_first(chunk, v, fn.noreturn)), key=order)
-    site = call(xname, inputs)
-    if not kinds and not outs:
-        body = _recode(chunk, dict.fromkeys(same), returning, At(fn.noreturn))
-        return [site], Piece(xname, inputs, body), None
     ret = outs[0] if outs else STATUS
     codes = {kind: c for c, kind in enumerate(sorted(kinds), 1)}
-    body = _recode(chunk, {**dict.fromkeys(same), **codes}, lambda: _end(ret), At(fn.noreturn))
-    body = body if ends_in_jump(body) else [*body, _end(ret)]
+    if not kinds and not outs:
+        body, ret = _recode(chunk, dict.fromkeys(same), returning, At(fn.noreturn)), None
+    else:
+        body = _recode(chunk, {**dict.fromkeys(same), **codes}, _ender(ret), At(fn.noreturn))
+        body = body if ends_in_jump(body) else [*body, _end(ret)]
+    shared = names_in(body) & (names_in(rest) | set(fn.params)) & fn.local
+    inputs = sorted(shared & Graph(body, fn.noreturn).live_in(), key=order)
+    site, piece = call(xname, inputs), Piece(xname, inputs, body, ret)
     if outs:
-        assign = c_ast.Assignment("=", c_ast.ID(ret), site)
-        return [assign], Piece(xname, inputs, body, ret), None
+        return [c_ast.Assignment("=", c_ast.ID(ret), site)], piece, None
+    if not kinds:
+        return [site], piece, None
     got, tmp = _site(xname, site, codes)
-    return got, Piece(xname, inputs, body, ret), tmp
+    return got, piece, tmp
 
 
 def _best(name, items, fn):
     """``(block, extraction)`` of the nested block of ``items`` whose extraction
     (:func:`_extraction`) saves the most cognitive complexity, its call site counted, or
     None when none saves any."""
-    best, gain = None, 0
+    best, gain, graph = None, 0, Graph(items, fn.noreturn)
     for chunk, depth, same in _blocks(items, 0, frozenset({"return"} if fn.void else ())):
-        got = _extraction(name, chunk, _swap(items, chunk, []), fn, same, items)
+        got = _extraction(name, chunk, swap(items, chunk, []), fn, same, graph)
         if got is not None:
             g = cost(chunk, depth) - cost(got[1].items) - cost(got[0], depth)
             if g > gain:
@@ -336,12 +345,12 @@ def extracted(name, args, items, fn, ret=None):  # pylint: disable=too-many-loca
     out, temps, k = [], set(), 0
     fn = fn._replace(void=ret is None, params=args)
     while cost(items) > THRESHOLD:
-        best = _best(f"{name}_x{k + 1}", items, fn)
+        k = next(j for j in count(k + 1) if f"{name}_x{j}" not in fn.taken)
+        best = _best(f"{name}_x{k}", items, fn)
         if best is None:
             break
-        k += 1
         chunk, (site, piece, tmp) = best
-        items = _swap(items, chunk, site)
+        items = swap(items, chunk, site)
         inner, more = extracted(
             piece.name, piece.args, ending(piece.items, _ender(piece.ret)), fn, piece.ret
         )
@@ -597,9 +606,17 @@ def _declare(items, names, types):
         if _initializes(st, v) and assigned_first(out, v):
             d.init, d.coord = st.rvalue, st.coord
             out[first] = d
+        elif isinstance(st, c_ast.For) and _initializes(st.init, v) and _alone(out, st, v):
+            d.init = st.init.rvalue
+            out[first] = c_ast.For(c_ast.DeclList([d]), st.cond, st.next, st.stmt, st.coord)
         else:
             starts.append(d)
     return starts + out
+
+
+def _alone(items, st, v):
+    """Whether ``st`` is the only statement of ``items`` mentioning ``v``."""
+    return [x for x in items if v in names_in([x])] == [st]
 
 
 def _initializes(st, v):
@@ -611,39 +628,6 @@ def _initializes(st, v):
         and st.lvalue.name == v
         and v not in q.reads(st.rvalue)
     )
-
-
-def unstored(items, local):
-    """``items`` without each assignment to a variable of ``local`` they never read of a
-    value computed from variables and constants alone."""
-    read = reads_in(items)
-
-    def f(st):
-        if isinstance(st, c_ast.Assignment) and st.op == "=" and isinstance(st.lvalue, c_ast.ID):
-            name = st.lvalue.name
-            if name in local and name not in read and _pure(st.rvalue):
-                return []
-        return [st]
-
-    return _splice(items, f)
-
-
-def _pure(e):
-    """Whether expression ``e`` is computed from variables and constants alone."""
-    return all(
-        isinstance(n, PURE) or (isinstance(n, c_ast.UnaryOp) and n.op in "-+~!") for n in q.walk(e)
-    )
-
-
-PURE = (
-    c_ast.ID,
-    c_ast.Constant,
-    c_ast.BinaryOp,
-    c_ast.TernaryOp,
-    c_ast.Cast,
-    c_ast.Typename,
-    *q.TYPES,
-)
 
 
 def _clean(items):
@@ -700,10 +684,12 @@ def _signature(name, args, ret, types, status):
     return c_ast.Decl(name, [], None, ["static"], [], c_ast.FuncDecl(params, rtype), None, None)
 
 
-def reduce_function(fd, noreturn=frozenset(), status=None):  # pylint: disable=too-many-locals
+def reduce_function(  # pylint: disable=too-many-locals
+    fd, noreturn=frozenset(), status=None, taken=frozenset()
+):
     """``[FuncDef]`` of C function ``fd`` rewritten (:func:`reduced`): the functions it is cut
-    into (each ``static``) first, ``fd``'s own last; ``[fd]`` when its locals cannot move.
-    ``noreturn``: names of functions that never return; ``status``: the type of exit codes."""
+    into (each ``static``, none named as in ``taken``) first, ``fd``'s own last; ``[fd]`` when
+    its locals cannot move. ``noreturn``: functions that never return; ``status``: exit codes."""
     status = status if status is not None else _named_type(["int"])
     params = _params(fd)
     types = dict(params)
@@ -721,23 +707,66 @@ def reduce_function(fd, noreturn=frozenset(), status=None):  # pylint: disable=t
         return isinstance(st, c_ast.FuncCall) and q.callee(st) in noreturn
 
     name = fd.decl.name
-    fn = Function(names, set(types) - set(names), _returns_void(fd), stops)
-    pieces, nsec, temps = reduced(body, name, fn)
+    body = Rotation(types, stops, widen=True)(refined(body, set(types)))
+    taken = frozenset(taken) | {n.name for n in q.walk(fd.body) if isinstance(n, c_ast.ID)}
+    fn = Function(names, set(types) - set(names), _returns_void(fd), stops, taken)
+    pieces, secs, temps = reduced(body, name, fn)
     types.update({t: copy.deepcopy(status) for t in temps})
+    pieces = [p._replace(items=finished(p.items, p.ret is None, types, stops)) for p in pieces]
+    if len(secs) > 1:
+        pieces.append(Piece(name, names, [call(sec, names) for sec in secs]))
     out = []
-    for p in pieces:
+    for p in pruned(pieces, name):
         mine = {v: t for v, t in types.items() if v not in p.args}
-        items = _clean(declare(unstored(p.items, set(types)), mine))
+        items = _clean(declare(p.items, mine))
         unread = [a for a in p.args if a not in names_in(items)]
         items = [c_ast.Cast(_void(), c_ast.ID(a)) for a in unread] + items
-        top = p.name == name and nsec == 1
-        decl = fd.decl if top else _signature(p.name, p.args, p.ret, types, status)
+        decl = fd.decl if p.name == name else _signature(p.name, p.args, p.ret, types, status)
         out.append(c_ast.FuncDef(decl, None, braced(items)))
-    if nsec > 1:
-        calls = [call(f"{name}_{k}", names) for k in range(1, nsec + 1)]
-        out.append(c_ast.FuncDef(fd.decl, None, braced(calls)))
     out.sort(key=lambda f: f.decl.name == name)
     return out
+
+
+def finished(items, void, types, stops=None):
+    """Statements ``items`` of a function (returning nothing when ``void``) refined
+    (:func:`~wayward_eagle.c.refine.refined`, rotated), copies propagated, dead stores and
+    unreached statements dropped, and trailing jumps trimmed."""
+    local = set(types)
+    items = reachable(Rotation(types, stops)(refined(items, local)), stops)
+    return trimmed(unstored(propagated(items, types, stops), local, stops), void)
+
+
+def _exprs(items, f):
+    """``items`` with each node of their expressions for which ``f`` gives one replaced."""
+
+    def fix(_lst, _i, st):
+        exprs = heads(st)
+        new = [q.replaced(e, f) for e in exprs]
+        return reheaded(st, new) if any(a is not b for a, b in zip(new, exprs)) else st
+
+    return remap(items, fix)
+
+
+def pruned(pieces, top):
+    """``pieces`` without each parameter a ``static`` piece (not ``top``) never mentions, nor
+    its argument in each call of it."""
+    pieces = list(pieces)
+    while True:
+        for k, p in enumerate(pieces):
+            gone = {i for i, a in enumerate(p.args) if a not in names_in(p.items)}
+            if gone and p.name != top:
+                break
+        else:
+            return pieces
+        pieces[k] = p._replace(args=[a for i, a in enumerate(p.args) if i not in gone])
+
+        def drop(n, p=p, gone=gone):
+            if isinstance(n, c_ast.FuncCall) and q.callee(n) == p.name:
+                args = [a for i, a in enumerate(q.arguments(n)) if i not in gone]
+                return c_ast.FuncCall(n.name, c_ast.ExprList(args) if args else None, n.coord)
+            return None
+
+        pieces = [x._replace(items=_exprs(x.items, drop)) for x in pieces]
 
 
 def _void():
@@ -757,11 +786,13 @@ def reduce_unit(unit, status=None, functions=None):
     from .printer import render  # pylint: disable=import-outside-toplevel
 
     noreturn = {s.name for s in unit.symbols.values() if s.noreturn}
+    taken = {s.name for s in unit.symbols.values() if s.function is None}
     text, out, at = unit.text, [], 0
     for f in unit.functions:
         if functions is not None and f.decl.name not in functions:
             continue
-        got = reduce_function(f, noreturn, status)
+        got = reduce_function(f, noreturn, status, taken - {f.decl.name})
+        taken |= {g.decl.name for g in got}
         if got == [f]:
             continue
         info = unit.sema[f]
