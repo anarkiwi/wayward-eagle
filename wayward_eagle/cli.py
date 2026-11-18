@@ -42,6 +42,7 @@ def main(argv=None):
                 "sites": [s._asdict() for s in rep.sites],
                 "counts": rep.counts(),
                 "complexity": rep.complexity,
+                "locals": rep.locals,
             }
             for path, rep in reports.items()
         }

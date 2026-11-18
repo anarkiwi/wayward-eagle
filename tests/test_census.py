@@ -99,6 +99,22 @@ CASES = {
         "void f(uint8_t v5) { while ((int8_t)v5 > 0) { tick(); v5 = v5 - 1; } }",
         (),
     ),
+    "status-call": (
+        "int h(int c) { if (c) { g = c; return 1; } return 0; }\n"
+        "void f(int c) { if (h(c)) { return; } tick(); }",
+        "int h(int c) { g = c; return c; }\nvoid f(int c) { if (h(c)) { return; } tick(); }",
+        (),
+    ),
+    "copy-variable": (
+        "int f(int a) { int v = a; tick(); return v + 1; }",
+        "int f(int a) { int v = a; a = 2; return v + a; }",
+        (),
+    ),
+    "edge-copy": (
+        "int f(int a, int c) { int v; if (c) { v = a; } else { v = 2; } return v; }",
+        "int f(int a, int c) { int v; if (c) { v = a + 1; } else { v = 2; } return v; }",
+        (),
+    ),
     "uncounted-loop": (
         "void f(void) { uint8_t v = 2; while (v != 0) { tick(); v = v - 1; } }",
         "void f(void) { for (uint8_t v = 2; v != 0; v = v - 1) { tick(); } }",
@@ -317,6 +333,133 @@ def test_effect_in_condition(tmp_path, body, found):
     assert bool(sites(tmp_path, body, (), "effect-in-condition")) == found
 
 
+STATUS = "int h(int c) { if (c) { g = c; return 1; } return 0; }\n"
+
+
+@pytest.mark.parametrize(
+    "body, status",
+    [
+        ("void f(int c) { if (!h(c)) { return; } tick(); }", True),
+        ("void f(int c) { if ((char)h(c) == 1) { tick(); } }", True),
+        ("void f(int c) { if (0 != h(c)) { tick(); } }", True),
+        ("void f(int c) { while (h(c)) { tick(); } }", True),
+        ("void f(int c) { if (h(c) + 1) { tick(); } }", False),
+        ("void f(int c) { if (h(c) == g) { tick(); } }", False),
+        ("void f(int c) { if (h(c = 2)) { tick(); } }", False),
+        ("void f(int c) { int a[2] = {0}; if (h(c)) { tick(); } g = a[c]; }", False),
+        ("void f(int c) { int x = 0; int *p = &x; if (h(c)) { tick(); } g = *p; }", False),
+        ("int k(int);\nvoid f(int c) { if (k(c)) { tick(); } }", False),
+        ("int k(int c) { g = c; return g; }\nvoid f(int c) { if (k(c)) { tick(); } }", False),
+        ("int k(int c) { g = c; return 0; }\nvoid f(int c) { if (k(c) && h(c)) tick(); }", False),
+    ],
+)
+def test_status_call(tmp_path, body, status):
+    """A condition that is only a call (negated, cast or compared with a constant) of a
+    function here returning exit codes, its arguments and the caller's objects out of its
+    reach, is a status call and no effect in a condition."""
+    got = {s.cls for s in sites(tmp_path, STATUS + body)}
+    assert ("status-call" in got, "effect-in-condition" in got) == (status, not status)
+
+
+@pytest.mark.parametrize(
+    "body, detail",
+    [
+        ("int f(int a) { int v = a; tick(); return v + 1; }", "v copies a"),
+        ("int f(void) { int v = g; return v + 1; }", "v copies g"),
+        ("int f(void) { int v = g; tick(); return v; }", None),
+        (
+            "int h(int c) { return c + 1; }\nint f(void) { int v = g; return h(v) + v; }",
+            "v copies g",
+        ),
+        ("int f(int a, int c) { int v = a; if (c) { v = 3; } return v; }", None),
+        ("int f(void) { uint8_t v = 2; tick(); return v; }", "v copies 2"),
+        ("int f(long a) { int v = a; return v; }", None),
+        ("int f(void) { int v; v = g; return v; }", "v copies g"),
+        (
+            "int f(int a) { int s = 0; int v = a; for (int i = 0; i < 3; i++) { s += v; }"
+            " return s; }",
+            "v copies a",
+        ),
+        ("volatile int vg;\nint f(void) { int v = vg; return v; }", None),
+        ("int f(int a) { int v = a; int *p = &v; return *p; }", None),
+        ("int f(int a, int b) { int v = a; return (a = b, v); }", None),
+        ("int f(int a) { int v = a; a = v + 1; return a; }", "v copies a"),
+        ("int f(int a, int c) { int v; if (c) { v = a; } return v; }", None),
+        ("int f(int a) { int v = a; l: tick(); if (g) { goto l; } return v; }", "v copies a"),
+        ("int f(int a) { int v = a; l: a++; if (g) { goto l; } return v; }", None),
+        ("void f(int a) { int v = a; }", None),
+        (
+            "int f(int a, int c) { int v = a; switch (c) { case 1: a = 0; break;"
+            " default: break; } return v; }",
+            None,
+        ),
+        ("int f(int a, int *p) { int v = a; *p = 1; return v; }", "v copies a"),
+        ("int f(int *p) { int v = g; *p = 1; return v; }", None),
+        ("uint8_t b[2];\nint f(void) { int v = g; b[1] = 1; return v; }", "v copies g"),
+        ("void f(int a) { int v = a; while (v) { a = 0; } }", None),
+    ],
+)
+def test_copy_variable(tmp_path, body, detail):
+    """A copy whose variable its source could replace at every use it reaches, every use
+    reached by it alone and with neither side changed since, is an extraneous variable."""
+    got = [s.detail for s in sites(tmp_path, body, (), "copy-variable")]
+    assert got == ([detail] if detail else [])
+
+
+@pytest.mark.parametrize(
+    "body, n",
+    [
+        ("int f(int a, int c) { int v; if (c) { v = a; } else { v = 2; } return v; }", 1),
+        ("void f(int c, int x) { uint8_t v; if (c) { v = 2; } else { g = x; v = 2; } g = v; }", 0),
+        ("void f(int c, int x) { uint8_t v; if (c) { v = 2; tick(); } else { v = 2; } g = v; }", 0),
+        (
+            "void f(int c, int x) { uint8_t v; if (c) { g = 1; v = 2; g = 3; }"
+            " else { g = x; v = 2; tick(); } g = v; }",
+            1,
+        ),
+        ("int f(int a, int c) { int v = a; if (c) { g = 1; } return v; }", 0),
+        ("int f(int a, int c) { int v; if (c) { v = a; g = v; } else { v = 2; } return v; }", 0),
+        ("int f(int a, int c) { int v = 1; if (c) { v = a; } return v; }", 1),
+        ("int f(int a) { int v = 0; while (g) { tick(); v = a; } return v; }", 1),
+        ("int f(void) { int v = 0; while (v < 3) { v = v + 1; } return v; }", 0),
+        ("int f(int a) { int v = 0; l: tick(); if (g) { v = a; goto l; } return v; }", 1),
+        (
+            "int f(int a, int c) { int v; switch (c) { case 1: v = a; break;"
+            " default: v = 3; } return v; }",
+            1,
+        ),
+        (
+            "int f(int a, int c) { int v, w; if (c) { v = a; w = 1; } else { v = 2; w = a; }"
+            " return v + w; }",
+            2,
+        ),
+    ],
+)
+def test_edge_copy(tmp_path, body, n):
+    """Distinct copies of one variable that are the last stores to it on two or more edges
+    into a join, unread since, are one site per join and variable; the same statement
+    leading or ending every arm is common-arm-statements' alone."""
+    assert len(sites(tmp_path, body, (), "edge-copy")) == n
+
+
+def test_edge_copy_names_its_lines(tmp_path):
+    """An edge copy's detail is the variable and the lines of its copies."""
+    body = "int f(int a, int c) {\n int v;\n if (c)\n v = a;\n else\n v = 2;\n return v;\n}"
+    (site,) = sites(tmp_path, body, (), "edge-copy")
+    assert (site.function, site.line, site.detail) == ("f", 6, "v: lines 7, 9")
+
+
+def test_locals_per_function(tmp_path):
+    """Each function's automatic variables are counted, parameters and statics aside."""
+    path = tmp_path / "t.c"
+    path.write_text(
+        HEAD + "void f(int c) { int a, b; static int s; { int t = c; g = t + a + b + s; } }\n"
+        "void h(void) { tick(); }\n",
+        encoding="utf-8",
+    )
+    assert cen.census(path).locals == {"f": 3, "h": 0}
+
+
 def test_duplicate_sequences_are_maximal(tmp_path):
     """A repeated sequence is reported once, at its longest, with every copy."""
     body = (
@@ -396,6 +539,7 @@ def test_cli_text_and_json(tmp_path, capsys):
     assert main(["census", str(path), "--json", "-I", str(tmp_path)]) == 0
     got = json.loads(capsys.readouterr().out)[str(path)]
     assert got["counts"]["goto"] == 1 and got["complexity"] == {"f": 2}
+    assert got["locals"] == {"f": 0}
     assert {"cls": "goto", "function": "f", "line": 4, "detail": "out"} in got["sites"]
 
 
@@ -403,13 +547,17 @@ def test_adapter_keys(tmp_path):
     """The adapter counts sites per key, every class of a file held, and totals each file's
     cognitive complexity."""
     path = tmp_path / "t.c"
-    path.write_text(HEAD + "void f(int c) { if (c) { goto out; } out:; }\n", encoding="utf-8")
+    path.write_text(
+        HEAD + "void f(int c) { int x = c; if (x) { goto out; } out:; }\n", encoding="utf-8"
+    )
     got = cen.adapter({"files": [str(tmp_path / "*.c")]})
     assert got["t:goto"] == 1 and got["t:dead-store"] == 0
-    assert got["t:cognitive-complexity"] == 2
-    assert "t:cognitive-complexity" in got and len(got) == len(cen.CLASSES)
-    by_fn = cen.adapter({"files": [str(path)], "key": "{class}/{function}", "total": "{path}"})
-    assert by_fn == {"goto/f": 1, str(path): 2}
+    assert got["t:cognitive-complexity"] == 2 and got["t:locals"] == 1
+    assert len(got) == len(cen.CLASSES) + 1
+    by_fn = cen.adapter(
+        {"files": [str(path)], "key": "{class}/{function}", "total": "{path}", "locals": ""}
+    )
+    assert by_fn == {"goto/f": 1, "copy-variable/f": 1, str(path): 2}
     with pytest.raises(ValueError):
         cen.adapter({"files": [str(tmp_path / "none-*.c")]})
 
