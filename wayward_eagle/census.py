@@ -25,7 +25,7 @@ from tqdm import tqdm
 from . import c, legible
 from .legible import Site
 from .c import query as q
-from .c.flow import Flow, bare
+from .c.flow import DEVICES, EVERYTHING, MEMORY, NOTHING, REASONS, Flow, bare, footprint
 from .c.model import model as _model, promoted as _promoted, width as _width
 
 COGNITIVE = "cognitive-complexity"
@@ -60,6 +60,8 @@ AST = (
     "raw-memory",
     "raw-hardware",
 )
+#: The locations a call reads and writes of a function declared ``const``, ``pure``.
+ATTRIBUTED = {"ConstAttr": (NOTHING, NOTHING), "PureAttr": (frozenset((MEMORY,)), NOTHING)}
 #: The fewest statements a repeated sequence holds.
 SEQUENCE = 2
 CLASSES = (COGNITIVE, *TIDY.values(), *AST)
@@ -78,7 +80,8 @@ CensusError = c.CError
 
 class Report(NamedTuple):
     """A file's sites, each function's cognitive complexity, number of automatic local
-    variables, lines and statements, and ``(opaque, all)`` distinct identifiers it names."""
+    variables, lines and statements, ``(opaque, all)`` distinct identifiers it names, and
+    each function's definitions of automatic variables (parameters aside) by reason."""
 
     sites: list
     complexity: dict
@@ -86,6 +89,7 @@ class Report(NamedTuple):
     lines: dict
     statements: dict
     names: tuple
+    reasons: dict
 
     def counts(self):
         """Sites per class, every class included."""
@@ -144,9 +148,10 @@ class Unit:  # pylint: disable=too-many-instance-attributes
         self.functions = self.c.functions
         self.spans = sorted((*self.c.span(f), f.decl.name) for f in self.functions)
         self.symbol_of = {f: self.c.sema[f].ref for f in self.functions}
-        self.impure = self._impure()
+        self.access = {}
+        self._summaries()
         self.sites, self.fn, self.addressed, self.moved = [], None, set(), set()
-        self.declared = 0
+        self.declared, self.reasons = 0, {}
         self.models = {c.HOST: _model(c.HOST)}
 
     def function_at(self, line):
@@ -161,7 +166,11 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             self._enter(f)
             self._visit(f, [], casts)
             self._duplicates(f)
-            self._copies(f)
+            flow = self.flow(f)
+            self._copies(flow)
+            kinds = self.c.symbols
+            got = Counter(r for d, r in flow.temporaries() if kinds[d.var].kind == "VarDecl")
+            self.reasons[f.decl.name] = {r: got[r] for r in REASONS}
             self.sites += legible.labels_after_jump(self.c, f)
         opaque, self.declared = legible.opaque_names(self.c)
         for got in (opaque, legible.raw_memory(self.c), legible.raw_hardware(self.c)):
@@ -237,58 +246,49 @@ class Unit:  # pylint: disable=too-many-instance-attributes
         sym = self.c.symbol(call)
         return sym if sym is not None and sym.kind == "FunctionDecl" else None
 
-    def _impure(self):
-        """Names of the defined functions a call to which may have an effect: one with an
-        effect of its own, or calling one, or calling a function not defined here and
-        declared neither ``pure`` nor ``const`` (a greatest fixed point)."""
-        calls, impure = {}, set()
+    def _summaries(self):
+        """``{name: (reads, writes)}`` of each function defined here: the locations (as
+        :func:`~wayward_eagle.c.flow.footprint`'s) a call to it may read and write beyond its
+        own automatic variables, a least fixed point over the calls it makes."""
+        self.access, body = {}, {}
         for f in self.functions:
-            name = f.decl.name
-            calls[name] = set()
-            for n in q.walk(f):
-                if isinstance(n, c_ast.FuncCall):
-                    sym = self.callee(n)
-                    if sym is None:
-                        impure.add(name)
-                    elif not _pure(sym):
-                        calls[name].add(sym.name)
-                elif self._effect(n, f):
-                    impure.add(name)
+            fn = self.symbol_of[f]
+            local = {
+                s.id
+                for s in self.c.symbols.values()
+                if s.kind in LOCALS and s.function == fn and s.storage not in ("static", "extern")
+            }
+            r, w = footprint(self.c, f.body, lambda call: (NOTHING, NOTHING))
+            self.access[f.decl.name] = (r - local, w - local)
+            body[f.decl.name] = list(q.calls(f.body))
         more = True
         while more:
             more = False
-            for f, callees in calls.items():
-                if f not in impure and any(g in impure or g not in calls for g in callees):
-                    impure.add(f)
-                    more = True
-        return impure
+            for name, calls in body.items():
+                r, w = self.access[name]
+                for call in calls:
+                    cr, cw = self.call_access(call)
+                    r, w = r | cr, w | cw
+                if (r, w) != self.access[name]:
+                    self.access[name], more = (r, w), True
+        return self.access
 
-    def _effect(self, n, f):
-        """Whether node ``n`` of function ``f`` has an effect beyond ``f``'s own automatic
-        variables: a store elsewhere, a volatile access or inline assembly."""
-        if isinstance(n, c.Opaque) and "Asm" in n.kind:
-            return True
-        info = self.c.sema.get(n)
-        if info is not None and info.type is not None and _is_expr(info):
-            if "volatile" in self.c.qualifiers(info.type):
-                return True
-        lhs = q.stored(n)
-        if lhs is None:
-            return False
-        var = self.target(lhs)
-        return not (
-            var is not None
-            and var.kind in LOCALS
-            and var.storage != "static"
-            and var.function == self.symbol_of[f]
-        )
+    def call_access(self, call):
+        """``(reads, writes)``: the locations call ``call`` may read and write: its definition's,
+        else for a function never returning the device (stopping is ordered with device
+        accesses), nothing for one declared ``const``, memory read for one declared ``pure``,
+        everything for any other."""
+        sym = self.callee(call)
+        if sym is None:
+            return EVERYTHING, EVERYTHING
+        if sym.name in self.access or sym.noreturn:
+            return self.access.get(sym.name, (DEVICES, DEVICES))
+        attrs = sym.attrs & {"ConstAttr", "PureAttr"}
+        return ATTRIBUTED[min(attrs)] if attrs else (EVERYTHING, EVERYTHING)
 
     def _call_effect(self, n):
         """Whether call ``n`` may have an effect."""
-        sym = self.callee(n)
-        if sym is None or sym.name in self.impure:
-            return True
-        return sym.name not in {f.decl.name for f in self.functions} and not _pure(sym)
+        return bool(self.call_access(n)[1])
 
     def target(self, lv):
         """The :class:`~wayward_eagle.c.Symbol` of the variable an lvalue names, or None."""
@@ -375,9 +375,13 @@ class Unit:  # pylint: disable=too-many-instance-attributes
                 return bare(other.type.canon) == bare(sym.type.canon)
         return self.integer(sym.type) and self.constant(rhs)
 
-    def _copies(self, f):
-        """copy-variable and edge-copy sites of function ``f``."""
-        flow = Flow(self.c, f, self._call_effect, self._copyable)
+    def flow(self, f):
+        """The :class:`~wayward_eagle.c.flow.Flow` of function ``f``, calls' effects and
+        locations as this unit decides them."""
+        return Flow(self.c, f, self._call_effect, self._copyable, self.call_access)
+
+    def _copies(self, flow):
+        """copy-variable and edge-copy sites of the function of :class:`Flow` ``flow``."""
         sym = self.c.symbols
         for d, _ in flow.copies():
             if sym[d.var].kind != "VarDecl":
@@ -820,16 +824,6 @@ def _key(unit, n):
     return (s.file, s.offset, b.file, b.offset)
 
 
-def _is_expr(info):
-    """Whether :class:`~wayward_eagle.c.Info` ``info`` is of an expression."""
-    return info.kind.endswith(("Expr", "Operator", "Literal"))
-
-
-def _pure(sym):
-    """Whether function ``sym`` is declared ``pure`` or ``const``."""
-    return bool(sym.attrs & {"PureAttr", "ConstAttr"})
-
-
 def _rhs(n):
     """The value an assignment or initialisation stores."""
     return n.init if isinstance(n, c_ast.Decl) else n.rvalue
@@ -950,7 +944,7 @@ def census(path, include=(), args=()):
     sites += unit.tidied(run) + ast
     names = sum(s.cls == "opaque-name" for s in sites), unit.declared
     sites.sort(key=lambda s: (s.line, s.cls, s.detail))
-    return Report(sites, scores, unit.locals(), *legible.size(unit.c), names)
+    return Report(sites, scores, unit.locals(), *legible.size(unit.c), names, unit.reasons)
 
 
 def census_all(paths, include=(), jobs=None, quiet=False):
@@ -967,19 +961,22 @@ def census_all(paths, include=(), jobs=None, quiet=False):
     return {p: out[p] for p in paths}
 
 
-def adapter(options):
+def adapter(options):  # pylint: disable=too-many-locals
     """virtuous-cycles adapter ``wayward-census``: site counts per key (docs/census.md).
 
     Options ``files`` (globs), ``include`` (directories), ``key`` (template over ``stem``,
     ``path``, ``class`` and ``function``), ``total`` (a file's complexity key), ``locals``
-    (a file's number of local variables key), ``lines`` and ``statements`` (the most lines
-    and statements of a function of the file keys); empty for none."""
+    (a file's number of local variables key), ``reasons`` (template also over ``reason``:
+    a file's definitions of local variables of each of :data:`REASONS`), ``lines`` and
+    ``statements`` (the most lines and statements of a function of the file keys); empty
+    for none."""
     files = sorted({p for g in options["files"] for p in glob.glob(g, recursive=True)})
     if not files:
         raise ValueError(f"no files match {options['files']}")
     template = options.get("key", "{stem}:{class}")
     total = options.get("total", "{stem}:cognitive-complexity")
     local = options.get("locals", "{stem}:locals")
+    reasons = options.get("reasons", "{stem}:locals:{reason}")
     largest = {m: options.get(m, f"{{stem}}:{m}") for m in ("lines", "statements")}
     out = Counter()
     for path, rep in census_all(files, options.get("include", ())).items():
@@ -993,6 +990,8 @@ def adapter(options):
         out[total.format(**names)] += sum(rep.complexity.values())
         if local:
             out[local.format(**names)] += sum(rep.locals.values())
+        for r in REASONS if reasons else ():
+            out[reasons.format(reason=r, **names)] += sum(c[r] for c in rep.reasons.values())
         for m, k in largest.items():
             if k:
                 k = k.format(**names)

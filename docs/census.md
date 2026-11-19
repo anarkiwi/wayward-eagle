@@ -5,10 +5,11 @@ each C file as a site `(class, function, line, detail)`, and counts sites per cl
 gives, per file, `sites`, `counts` (every class), `complexity` (each function's cognitive
 complexity), `locals` (each function's number of automatic local variables, parameters
 and `static` or `extern` locals aside), `lines` and `statements` (each function's, by
-[size](#size)) and `names` (`opaque` and `declared`: the distinct identifiers the file names,
-by [`opaque-name`](#opaque-name)). In Python, `wayward_eagle.census.census(path, include)`
+[size](#size)), `names` (`opaque` and `declared`: the distinct identifiers the file names,
+by [`opaque-name`](#opaque-name)) and `reasons` (each function's definitions of automatic
+variables by [reason](#locals-by-reason)). In Python, `wayward_eagle.census.census(path, include)`
 returns a `Report` (`sites`, `complexity`, `locals`, `lines`, `statements`, `names`,
-`counts()`);
+`reasons`, `counts()`);
 `census_all(paths, include)` runs files in parallel.
 
 Two engines find sites, both pinned as dependencies so results do not depend on the host:
@@ -234,6 +235,51 @@ Each function's `lines` (from its first line to its last) and `statements`, as c
 them: an expression, `return`, jump, `if`, loop or `switch` is one, a declaration statement
 one however many variables it declares, and blocks, labels and empty statements none.
 
+### Locals by reason
+
+Each definition (an initialisation or assignment, `++`, `--` or compound assignment) of an
+automatic variable a function owns (see [dataflow](#dataflow); parameters aside) is counted
+under the first reason of this order that holds of it, so a definition both used twice and
+clobbered is `clobbered`:
+
+| Reason | Holds when | Taxonomy |
+|---|---|---|
+| `unused` | no use of the variable reads it (its value is overwritten or dies) | C2.a (as `dead-store`) |
+| `check-only` | every use is in the condition of an `if` a branch of which surely ends in a call that never returns (`if ((uint16_t)(v - ORG) > LIM) trap(0xA);`): every path from the branch reaches a vertex without successors | C2.a (it feeds only a check the translation added) |
+| `clobbered` | on some path from it to a use, something may change what its value reads: an assignment to a variable it reads (its own, for `v = v + 1`), or a store or call that may write memory it reads; or, for a value with effects of its own, something reads or writes what it writes | none (the variable holds a value the program no longer has) |
+| `merged` | another definition of the variable reaches one of its uses too (a join of assignments on several paths, or a store to part of it) | none (assignment on several paths is how C merges values; `edge-copy` reports the extraneous ones) |
+| `multi-use` | its value is read more than once (counting each occurrence in a statement) | none (a value named for its several uses) |
+| `single-use` | its value is read once, and printing its defining expression there reads the same values | C5.a (extraneous variable: the expression could stand at its use) |
+
+`single-use` is the removable class: a temporary the expression it holds could replace.
+`multi-use` definitions could be recomputed at each use too (nothing between changes what
+they read), at the cost of repeating the expression.
+
+Clobbering is a forward may problem over definitions, along the reaching definitions: a
+definition is generated where something conflicts with its value (at its own vertex when its
+value reads its variable), and killed where its variable is surely stored. At the use, the
+statement's evaluations other than the use's ancestors (which act after reading it, such as
+the store of `V[i] = v` or the call of `io_write(a, v)`) conflict as well.
+
+Two evaluations conflict when one writes a location the other reads or writes. Locations are
+owned variables, other variables, elements of an array variable with a constant subscript
+(`R1[0x122]` and `R1[0x131]` apart; a variable subscript is the whole array), memory
+through a pointer (overlapping every variable not owned) and the device: a volatile access
+both reads and writes the device and no memory, so a volatile store through an address
+(`*(volatile uint8_t *)a = v`) changes no program variable. An object declared `const` is
+no location. Operands of `sizeof` are not evaluated.
+
+What a call reads and writes is its callee's definition's, when the file defines it: the
+locations its body touches beyond its own automatic variables, and those of the calls it
+makes, a least fixed point over the file's calls. So an accessor defined as a volatile
+store (`void io_write(uint16_t a, uint8_t v) { *(volatile uint8_t *)a = v; }`) touches the
+device only, and a value read from a variable before it is used after it. Otherwise a
+function declared `const` touches nothing, one declared `pure` reads memory, and one that
+never returns (`trap`) touches the device only: no code after it runs, and stopping is
+ordered with device accesses. Any other call, and a call through a pointer, may read and
+write everything. Where the other classes ask whether a call has an effect, it has one when
+it may write any location.
+
 ### `uncounted-loop`
 
 A loop and an automatic integer variable `v` whose address is never taken, where:
@@ -276,7 +322,7 @@ Checkable on C alone, and not yet classes:
 | C12.a | return value for void function | a function whose every call discards its result |
 
 Not checkable without the original source: C0 beyond generic names, C2.b, C3.b, C4, C4.a.ii, C4.a.iii, C4.b,
-C4.c, C5.a, C5.b, C6.a, C6.b, C6.d, C8 and C9 beyond memory blocks and raw addresses,
+C4.c, C5.a beyond single-use temporaries, C5.b, C6.a, C6.b, C6.d, C8 and C9 beyond memory blocks and raw addresses,
 C12.b, C13, C14.
 
 ## Dataflow
@@ -288,9 +334,11 @@ read, for any analysis of a function body:
 |---|---|
 | `build(body, noreturn=..., gotos=False)` | `CFG` of a `FuncDef`'s body: `nodes[i]` the expression, declaration, condition, `return` or computed `goto` vertex `i` evaluates, or None for a join of statement `origin[i]`; `succ`, `pred` (reachable), `entry`, `exit`, `order` (reverse postorder), `reachable`, `joins()`. A top-level comma splits into vertices; a statement calling a function `noreturn` holds of has no successor; a computed `goto` enters every label; with `gotos`, each named `goto` is a vertex entering its label |
 | `solve(cfg, gen, kill, universe=None, forward=True)` | `(into, out)` bit sets per vertex of a worklist bit-vector problem: may (union), or must (intersection, starting from `universe`); forward or backward |
-| `Flow(unit, fd, effect=None, copyable=None)` | the function's owned variables `own` (automatic variables and parameters neither array, volatile, nor addressed by `&` or inline assembly), each vertex's `facts` (reads, stores, whether it may write memory), and `defs` (each definition, a parameter's on entry, whether it surely stores, and what a copy copies) |
+| `footprint(unit, n, calls, skip=())` | `(reads, writes)`: the locations evaluating `n` may read and write (symbol ids, `(id, index)` elements, `MEMORY`, `DEVICE`), `calls(call)` a call's |
+| `Flow(unit, fd, effect=None, copyable=None, calls=None)` | the function's owned variables `own` (automatic variables and parameters neither array, volatile, nor addressed by `&` or inline assembly), each vertex's `facts` (reads, stores, whether it may write memory), and `defs` (each definition, a parameter's on entry, whether it surely stores, and what a copy copies); `calls(call)` the locations a call reads and writes (default everything) |
 | `Flow.reaching()`, `Flow.available()`, `Flow.liveness()` | reaching definitions, available copies, live variables per vertex |
 | `Flow.copies()`, `Flow.edge_copies()` | copies whose source could replace their variable at every use; distinct copies reaching a join on its edges |
+| `Flow.temporaries()` | `(def, reason)` of each definition but a parameter's or a bare declaration, by [reason](#locals-by-reason) |
 
 A store under the right operand of `&&`/`||` or an arm of `?:`, or to part of a variable,
 may store and kills no definition.
@@ -313,6 +361,7 @@ include = ["out/census", "c64"]
 key = "{stem}:{class}"
 total = "{stem}:cognitive-complexity"
 locals = "{stem}:locals"
+reasons = "{stem}:locals:{reason}"
 lines = "{stem}:lines"
 statements = "{stem}:statements"
 ```
@@ -324,6 +373,7 @@ statements = "{stem}:statements"
 | `key` | `{stem}:{class}` | `str.format` template over `stem`, `path`, `class`, `function`; values are site counts |
 | `total` | `{stem}:cognitive-complexity` | template over `stem` and `path`; the value is the file's total cognitive complexity |
 | `locals` | `{stem}:locals` | template over `stem` and `path`; the value is the file's total of automatic local variables (`locals` of `--json`); empty for no key |
+| `reasons` | `{stem}:locals:{reason}` | template over `stem`, `path` and `reason`; the value is the file's definitions of automatic variables of that [reason](#locals-by-reason), every reason a key; empty for none |
 | `lines`, `statements` | `{stem}:lines`, `{stem}:statements` | templates over `stem` and `path`; the value is the most lines, or statements, of a function of the file; empty for no key |
 
 Without `{function}` in `key`, every class of every file is a key, at zero when it has no

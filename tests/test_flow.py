@@ -140,3 +140,11 @@ def test_solve_backward_may(tmp_path):
     into, out = flow.solve(g, gen, [0] * len(g.nodes), forward=False)
     assert into[g.entry] == 1 and into[vertex(unit, g, "tick()")] == 1
     assert out[vertex(unit, g, "g = 1")] == 0
+
+
+def test_temporaries_take_any_call_to_write_everything(tmp_path):
+    """Without the unit's calls, a call between a definition and its use may change what it
+    reads; a constant it may not."""
+    unit, f = load(tmp_path, "int f(void) { int t = g; int u = 1; tick(); return t + u; }")
+    got = {unit.source(d.node): r for d, r in flow.Flow(unit, f).temporaries()}
+    assert got == {"int t = g": "clobbered", "int u = 1": "single-use"}

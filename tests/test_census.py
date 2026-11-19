@@ -563,6 +563,7 @@ def test_cli_text_and_json(tmp_path, capsys):
     assert got["counts"]["goto"] == 1 and got["complexity"] == {"f": 2}
     assert got["locals"] == {"f": 0} and got["lines"] == {"f": 1} and got["statements"] == {"f": 2}
     assert got["names"] == {"opaque": 0, "declared": 5}
+    assert got["reasons"] == {"f": dict.fromkeys(cen.REASONS, 0)}
     assert {"cls": "goto", "function": "f", "line": 4, "detail": "out"} in got["sites"]
 
 
@@ -577,13 +578,15 @@ def test_adapter_keys(tmp_path):
     assert got["t:goto"] == 1 and got["t:dead-store"] == 0
     assert got["t:cognitive-complexity"] == 2 and got["t:locals"] == 1
     assert got["t:lines"] == 1 and got["t:statements"] == 3
-    assert len(got) == len(cen.CLASSES) + 3
+    assert got["t:locals:single-use"] == 1 and got["t:locals:clobbered"] == 0
+    assert len(got) == len(cen.CLASSES) + 3 + len(cen.REASONS)
     by_fn = cen.adapter(
         {
             "files": [str(path)],
             "key": "{class}/{function}",
             "total": "{path}",
             "locals": "",
+            "reasons": "",
             "lines": "",
             "statements": "",
         }
@@ -626,3 +629,105 @@ def test_ratchet(tmp_path):
     )
     failed = vc("check")
     assert failed.returncode == 1 and "fuzz-loop-0:goto" in failed.stdout + failed.stderr
+
+
+DEVICE = (
+    "uint8_t a[2], b[2];\n"
+    "void out(uint16_t p, uint8_t v) { *(volatile uint8_t *)p = v; }\n"
+    "uint8_t in(uint16_t p) { return *(volatile uint8_t *)p; }\n"
+    "__attribute__((noreturn)) void die(void);\n"
+    "__attribute__((const)) int k(void);\n"
+    "__attribute__((pure)) int r(void);\n"
+    "void put(int v) { g = v; }\n"
+    "void check(int v) { if (v) { die(); } }\n"
+)
+
+#: Function (after HEAD and DEVICE): the reason of each definition, by its source.
+REASONS = [
+    ("int f(void) { int t = g + 1; return t; }", {"int t = g + 1": "single-use"}),
+    ("void f(void) { int t = g; tick(); g = t; }", {"int t = g": "clobbered"}),
+    ("void f(void) { int t = g; k(); r(); g = t; }", {"int t = g": "single-use"}),
+    ("void f(void) { int t = a[0]; out(1, 2); b[1] = t; }", {"int t = a[0]": "single-use"}),
+    ("void f(void) { int t = in(1); out(2, 3); g = t; }", {"int t = in(1)": "clobbered"}),
+    ("void f(void) { int t = a[0]; b[0] = 1; g = t; }", {"int t = a[0]": "single-use"}),
+    ("void f(void) { int t = a[0]; a[1] = 1; g = t; }", {"int t = a[0]": "single-use"}),
+    ("void f(void) { int t = a[0]; a[0] = 1; g = t; }", {"int t = a[0]": "clobbered"}),
+    ("void f(int c) { int t = a[0]; a[c] = 1; g = t; }", {"int t = a[0]": "clobbered"}),
+    ("void f(int c) { int t = a[c]; a[1] = 1; g = t; }", {"int t = a[c]": "clobbered"}),
+    ("void f(uint8_t *p) { int t = a[1]; *p = 1; g = t; }", {"int t = a[1]": "clobbered"}),
+    ("void f(void) { int t = *(a + 1); a[1] = 1; g = t; }", {"int t = *(a + 1)": "clobbered"}),
+    ("void f(int *p) { int t = a[0]; *p = 1; g = t; }", {"int t = a[0]": "clobbered"}),
+    (
+        "static const int K[2] = {1, 2};\nvoid f(int c, int *p) { int t = K[c]; *p = 0; g = t; }",
+        {"int t = K[c]": "single-use"},
+    ),
+    ("int f(void) { int t = g; return t * t; }", {"int t = g": "multi-use"}),
+    ("int f(int c) { int t = c + 1; c = 0; return t + c; }", {"int t = c + 1": "clobbered"}),
+    (
+        "int f(int c) { int t = c; t = t + 1; return t; }",
+        {"int t = c": "single-use", "t = t + 1": "clobbered"},
+    ),
+    (
+        "int f(int c) { int t; if (c) { t = 1; } else { t = 2; } return t; }",
+        {"t = 1": "merged", "t = 2": "merged"},
+    ),
+    ("void f(void) { int t = g; t = 2; g = t; }", {"int t = g": "unused", "t = 2": "single-use"}),
+    (
+        "void f(int c) { int t = c - 3; if (t > 5) { die(); } g = c; }",
+        {"int t = c - 3": "check-only"},
+    ),
+    (
+        "void f(int c) { int t = c - 3; if (t > 5) { die(); } g = t; }",
+        {"int t = c - 3": "multi-use"},
+    ),
+    (
+        "void f(void) { for (;;) { int t = in(1); if (t) { g = 1; } else { while (1) {} } } }",
+        {"int t = in(1)": "single-use"},
+    ),
+    ("void f(void) { int t = g; g = t + 1; }", {"int t = g": "single-use"}),
+    ("void f(void) { int t = g; b[0] = (g = 1) + t; }", {"int t = g": "clobbered"}),
+    ("void f(void) { int t = g; put(t); }", {"int t = g": "single-use"}),
+    ("void f(void) { int t = g; check(1); b[0] = t; }", {"int t = g": "single-use"}),
+    ("void f(void) { int t = in(1); check(0); g = t; }", {"int t = in(1)": "clobbered"}),
+    ("void f(int n) { int t = g; while (n--) { g = 0; } b[0] = t; }", {"int t = g": "clobbered"}),
+    ("void f(int *p) { int t = sizeof(*p); *p = 1; g = t; }", {"int t = sizeof(*p)": "single-use"}),
+    ('void f(void) { int t = g; __asm__(""); b[0] = t; }', {"int t = g": "clobbered"}),
+]
+
+
+@pytest.mark.parametrize("body, want", REASONS)
+def test_reasons_of_definitions(tmp_path, body, want):
+    """Each definition of a local variable has the first reason that holds of it."""
+    path = tmp_path / "t.c"
+    path.write_text(HEAD + DEVICE + body + "\n", encoding="utf-8")
+    unit = cen.Unit(path)
+    got = {unit.c.source(d.node): r for d, r in unit.flow(unit.functions[-1]).temporaries()}
+    assert {k: v for k, v in got.items() if k in want} == want
+    counts = cen.census(path).reasons
+    assert sum(counts["f"].values()) == len(want) and set(counts["f"]) == set(cen.REASONS)
+
+
+def test_call_access(tmp_path):
+    """A call reads and writes its definition's locations (its own automatic variables
+    aside), a device for volatile accesses and for a function never returning, nothing for
+    ``const``, memory reads for ``pure``, everything for any other."""
+    path = tmp_path / "t.c"
+    path.write_text(
+        HEAD
+        + DEVICE
+        + "void f(int (*h)(void)) { put(1); out(1, 2); check(0); k(); r(); tick(); h(); }\n",
+        encoding="utf-8",
+    )
+    unit = cen.Unit(path)
+    got = [unit.call_access(x) for x in cen.q.calls(unit.functions[-1])]
+    g = next(i for i, s in unit.c.symbols.items() if s.name == "g")
+    dev, every = frozenset({"device"}), frozenset({"device", "memory"})
+    assert got == [
+        (frozenset(), frozenset({g})),
+        (dev, dev),
+        (dev, dev),
+        (frozenset(), frozenset()),
+        (frozenset({"memory"}), frozenset()),
+        (every, every),
+        (every, every),
+    ]
