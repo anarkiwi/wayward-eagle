@@ -43,6 +43,9 @@ def main(argv=None):
                 "counts": rep.counts(),
                 "complexity": rep.complexity,
                 "locals": rep.locals,
+                "lines": rep.lines,
+                "statements": rep.statements,
+                "names": dict(zip(("opaque", "declared"), rep.names)),
             }
             for path, rep in reports.items()
         }
