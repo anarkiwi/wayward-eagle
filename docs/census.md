@@ -179,9 +179,12 @@ A name splits into words at underscores, between letters and digits, and at came
 upper-case letters followed by a lower-case one): `f12_1` is `f`, `12`, `1`; `B0c2` is
 `B`, `0`, `c`, `2`; `readHWReg` is `read`, `HW`, `Reg`. A word carries meaning when it has
 two letters or more and is not made only of hexadecimal digits; a single letter tags a
-kind, and a number or hex tag (`AF`, `1FF`) an address. So `v13`, `S_108`, `K_AF`, `R1`,
-`c48`, `f12_1`, `x3` and single-letter names (`i`, `p`) are opaque, and `g_freq_lo_2`,
-`freq_hi`, `voice` and `ptr` are not: a number disambiguating a meaningful name is fine.
+kind, and a number or hex tag (`AF`, `1FF`) an address. A name is opaque when no word of it
+carries meaning and one is a number or hex tag: its meaning is only a number. So `v13`,
+`S_108`, `K_AF`, `R1`, `c48`, `f12_1` and `x3` are opaque, and `g_freq_lo_2`, `freq_hi`,
+`voice` and `ptr` are not: a number disambiguating a meaningful name is fine. A name of
+single letters alone (`i`, `p`, `x_y`) is C's convention for an index or parameter, not a
+number standing in for a name.
 
 No word is treated specially: a generator's prefix is a word like any other, so
 `cgen_play_x1` (`play`) and `CGEN_OBJ0_ORG` (`OBJ`, `ORG`) are not opaque. A word of hex

@@ -39,10 +39,11 @@ def test_words(name, words):
 
 
 def test_opaque_names_have_no_meaningful_word():
-    """A name is opaque when every word is a single letter, a number or a hex tag; a
-    meaningful word with a number beside it is not."""
-    names = ["v13", "S_108", "K_AF", "R1", "c48", "f12_1", "x3", "a", "B0c2", "S_1FF"]
+    """A name is opaque when every word is a single letter, a number or a hex tag, one at
+    least a number or tag; a meaningful word with a number beside it is not."""
+    names = ["v13", "S_108", "K_AF", "R1", "c48", "f12_1", "x3", "B0c2", "S_1FF"]
     words = ["g_freq_lo_2", "freq_hi", "voice", "ptr", "cgen_play_x1", "CGEN_OBJ0_ORG", "R0_ORG"]
+    words += ["a", "i", "x_y"]
     assert legible.opaque(names + words) == set(names)
 
 
@@ -58,7 +59,7 @@ def test_identifiers_seen_by_the_reader(tmp_path):
     assert set(names) == {"f", "v1", "g", "W", "K_1F", "L1", "tick", "trap"}
     assert names["v1"][1] == "f" and names["g"][1] == ""
     sites, declared = legible.opaque_names(u)
-    assert sorted(s.detail for s in sites) == ["K_1F", "L1", "W", "f", "g", "v1"] and declared == 8
+    assert sorted(s.detail for s in sites) == ["K_1F", "L1", "v1"] and declared == 8
 
 
 MEMORY = "uint8_t m[64];\nuint8_t t[4];\n"

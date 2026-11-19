@@ -56,8 +56,14 @@ def meaningful(word):
 
 
 def opaque(names):
-    """The names of ``names`` no word of which carries meaning (:func:`meaningful`)."""
-    return {n for n in names if not any(map(meaningful, words(n)))}
+    """The names of ``names`` no word of which carries meaning (:func:`meaningful`) and some
+    word of which is a number or hex tag: ``v13``, ``K_AF``, but not ``i``."""
+    out = set()
+    for n in names:
+        ws = words(n)
+        if not any(map(meaningful, ws)) and any(len(w) > 1 or w.isdigit() for w in ws):
+            out.add(n)
+    return out
 
 
 def _here(unit, loc):
