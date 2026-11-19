@@ -22,7 +22,8 @@ from pycparser import c_ast
 import yaml
 from tqdm import tqdm
 
-from . import c
+from . import c, legible
+from .legible import Site
 from .c import query as q
 from .c.flow import Flow, bare
 from .c.model import model as _model, promoted as _promoted, width as _width
@@ -54,6 +55,10 @@ AST = (
     "duplicate-code",
     "copy-variable",
     "edge-copy",
+    "label-after-jump",
+    "opaque-name",
+    "raw-memory",
+    "raw-hardware",
 )
 #: The fewest statements a repeated sequence holds.
 SEQUENCE = 2
@@ -71,22 +76,16 @@ real = functools.lru_cache(maxsize=None)(os.path.realpath)
 CensusError = c.CError
 
 
-class Site(NamedTuple):
-    """A defect: its class, the function holding it (``""`` at file scope), line, detail."""
-
-    cls: str
-    function: str
-    line: int
-    detail: str
-
-
 class Report(NamedTuple):
-    """A file's sites, each function's cognitive complexity, and each function's number of
-    automatic local variables."""
+    """A file's sites, each function's cognitive complexity, number of automatic local
+    variables, lines and statements, and ``(opaque, all)`` distinct identifiers it names."""
 
     sites: list
     complexity: dict
     locals: dict
+    lines: dict
+    statements: dict
+    names: tuple
 
     def counts(self):
         """Sites per class, every class included."""
@@ -147,6 +146,7 @@ class Unit:  # pylint: disable=too-many-instance-attributes
         self.symbol_of = {f: self.c.sema[f].ref for f in self.functions}
         self.impure = self._impure()
         self.sites, self.fn, self.addressed, self.moved = [], None, set(), set()
+        self.declared = 0
         self.models = {c.HOST: _model(c.HOST)}
 
     def function_at(self, line):
@@ -162,6 +162,10 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             self._visit(f, [], casts)
             self._duplicates(f)
             self._copies(f)
+            self.sites += legible.labels_after_jump(self.c, f)
+        opaque, self.declared = legible.opaque_names(self.c)
+        for got in (opaque, legible.raw_memory(self.c), legible.raw_hardware(self.c)):
+            self.sites += got
         if casts:
             narrow = Casts(c.load(self.path, args=self.args, target=c.NARROW))
             keep = narrow.subsumed()
@@ -944,7 +948,9 @@ def census(path, include=(), args=()):
         run.wait()
     sites, scores = unit.complexity()
     sites += unit.tidied(run) + ast
-    return Report(sorted(sites, key=lambda s: (s.line, s.cls, s.detail)), scores, unit.locals())
+    names = sum(s.cls == "opaque-name" for s in sites), unit.declared
+    sites.sort(key=lambda s: (s.line, s.cls, s.detail))
+    return Report(sites, scores, unit.locals(), *legible.size(unit.c), names)
 
 
 def census_all(paths, include=(), jobs=None, quiet=False):
@@ -965,14 +971,16 @@ def adapter(options):
     """virtuous-cycles adapter ``wayward-census``: site counts per key (docs/census.md).
 
     Options ``files`` (globs), ``include`` (directories), ``key`` (template over ``stem``,
-    ``path``, ``class`` and ``function``), ``total`` (a file's complexity key) and ``locals``
-    (a file's number of local variables key, empty for none)."""
+    ``path``, ``class`` and ``function``), ``total`` (a file's complexity key), ``locals``
+    (a file's number of local variables key), ``lines`` and ``statements`` (the most lines
+    and statements of a function of the file keys); empty for none."""
     files = sorted({p for g in options["files"] for p in glob.glob(g, recursive=True)})
     if not files:
         raise ValueError(f"no files match {options['files']}")
     template = options.get("key", "{stem}:{class}")
     total = options.get("total", "{stem}:cognitive-complexity")
     local = options.get("locals", "{stem}:locals")
+    largest = {m: options.get(m, f"{{stem}}:{m}") for m in ("lines", "statements")}
     out = Counter()
     for path, rep in census_all(files, options.get("include", ())).items():
         names = {"stem": pathlib.Path(path).stem, "path": path}
@@ -985,4 +993,8 @@ def adapter(options):
         out[total.format(**names)] += sum(rep.complexity.values())
         if local:
             out[local.format(**names)] += sum(rep.locals.values())
+        for m, k in largest.items():
+            if k:
+                k = k.format(**names)
+                out[k] = max(out[k], *getattr(rep, m).values(), 0)
     return dict(out)

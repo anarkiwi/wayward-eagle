@@ -75,8 +75,8 @@ class CFG:
 class _Builder:
     """Builds a :class:`CFG` statement by statement, each from its successor back."""
 
-    def __init__(self, noreturn):
-        self.g, self.noreturn = CFG(), noreturn
+    def __init__(self, noreturn, gotos=False):
+        self.g, self.noreturn, self.gotos = CFG(), noreturn, gotos
         self.labels, self.computed, self.switches = {}, [], []
 
     def label(self, name, origin=None):
@@ -150,7 +150,7 @@ class _Builder:
             g.succ[join] = [self.stmt(n.stmt, nxt, brk, cont)]
             return join
         if isinstance(n.name, str):
-            return self.label(n.name)
+            return g.add(n, [self.label(n.name)]) if self.gotos else self.label(n.name)
         self.computed.append(g.add(n))
         return self.computed[-1]
 
@@ -170,10 +170,12 @@ class _Builder:
         return self.stmt(init, head, None, None)
 
 
-def build(body, noreturn=lambda call: False):
+def build(body, noreturn=lambda call: False, gotos=False):
     """The :class:`CFG` of function body ``body``; a statement that is a call ``noreturn``
-    holds of has no successor. A computed ``goto`` may go to any label."""
-    b = _Builder(noreturn)
+    holds of has no successor. A computed ``goto`` may go to any label; with ``gotos``, a
+    named ``goto`` is a vertex of its own too, so a label's predecessors tell its jumps from
+    the statement falling into it."""
+    b = _Builder(noreturn, gotos)
     g = b.g
     g.succ[g.entry] = [b.stmt(body, g.exit, None, None)]
     for x in b.computed:

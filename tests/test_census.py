@@ -130,6 +130,28 @@ CASES = {
         "void f(int c) { if (c) { g = 1; tick(); } g = 2; g = 3; tick(); }",
         (),
     ),
+    "label-after-jump": (
+        "void f(int c) { if (c) { goto out; } tick(); return; out: tick(); }",
+        "void f(int c) { if (c) { goto out; } tick(); out: tick(); }",
+        (),
+    ),
+    "opaque-name": (
+        "void f(int v1, int v2) { g = v1 + v2; }",
+        "void f(int lo, int hi) { g = lo + hi; }",
+        (),
+    ),
+    "raw-memory": (
+        "uint8_t m[64];\nvoid f(int i) { m[0x10 + i] = 1; m[0x20 + i] = 2; }",
+        "uint8_t m[64];\nvoid f(int i, int j) { m[i] = 1; m[i + 1] = 2; m[j] = 3; m[5] = 4; }",
+        (),
+    ),
+    "raw-hardware": (
+        "void out(uint16_t a, uint8_t v) { *(volatile uint8_t *)a = v; }\n"
+        "void f(uint8_t i) { out(0xD400 + i, 1); }",
+        "void out(uint16_t a, uint8_t v) { *(volatile uint8_t *)a = v; }\n"
+        "void f(uint16_t a) { out(a, 1); }",
+        (),
+    ),
 }
 
 
@@ -539,7 +561,8 @@ def test_cli_text_and_json(tmp_path, capsys):
     assert main(["census", str(path), "--json", "-I", str(tmp_path)]) == 0
     got = json.loads(capsys.readouterr().out)[str(path)]
     assert got["counts"]["goto"] == 1 and got["complexity"] == {"f": 2}
-    assert got["locals"] == {"f": 0}
+    assert got["locals"] == {"f": 0} and got["lines"] == {"f": 1} and got["statements"] == {"f": 2}
+    assert got["names"] == {"opaque": 0, "declared": 5}
     assert {"cls": "goto", "function": "f", "line": 4, "detail": "out"} in got["sites"]
 
 
@@ -553,9 +576,17 @@ def test_adapter_keys(tmp_path):
     got = cen.adapter({"files": [str(tmp_path / "*.c")]})
     assert got["t:goto"] == 1 and got["t:dead-store"] == 0
     assert got["t:cognitive-complexity"] == 2 and got["t:locals"] == 1
-    assert len(got) == len(cen.CLASSES) + 1
+    assert got["t:lines"] == 1 and got["t:statements"] == 3
+    assert len(got) == len(cen.CLASSES) + 3
     by_fn = cen.adapter(
-        {"files": [str(path)], "key": "{class}/{function}", "total": "{path}", "locals": ""}
+        {
+            "files": [str(path)],
+            "key": "{class}/{function}",
+            "total": "{path}",
+            "locals": "",
+            "lines": "",
+            "statements": "",
+        }
     )
     assert by_fn == {"goto/f": 1, "copy-variable/f": 1, str(path): 2}
     with pytest.raises(ValueError):

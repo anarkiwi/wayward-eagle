@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wayward-eagle"
-version = "0.5.0"
+version = "0.5.1"
 description = "Lower the cognitive complexity of C function bodies, keeping what they do, and census C readability defects"
 readme = "README.md"
 requires-python = ">=3.12"

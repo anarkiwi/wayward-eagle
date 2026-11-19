@@ -3,9 +3,12 @@
 `wayward-eagle census FILE.c... [-I DIR] [-j N] [--json]` lists each readability defect of
 each C file as a site `(class, function, line, detail)`, and counts sites per class. `--json`
 gives, per file, `sites`, `counts` (every class), `complexity` (each function's cognitive
-complexity) and `locals` (each function's number of automatic local variables, parameters
-and `static` or `extern` locals aside). In Python, `wayward_eagle.census.census(path,
-include)` returns a `Report` (`sites`, `complexity`, `locals`, `counts()`);
+complexity), `locals` (each function's number of automatic local variables, parameters
+and `static` or `extern` locals aside), `lines` and `statements` (each function's, by
+[size](#size)) and `names` (`opaque` and `declared`: the distinct identifiers the file names,
+by [`opaque-name`](#opaque-name)). In Python, `wayward_eagle.census.census(path, include)`
+returns a `Report` (`sites`, `complexity`, `locals`, `lines`, `statements`, `names`,
+`counts()`);
 `census_all(paths, include)` runs files in parallel.
 
 Two engines find sites, both pinned as dependencies so results do not depend on the host:
@@ -49,10 +52,19 @@ codebook does not code it.
 | `duplicate-code` | AST | below | C7.c |
 | `copy-variable` | AST, [dataflow](#dataflow) | below | C5.a.i |
 | `edge-copy` | AST, [dataflow](#dataflow) | below | C7 |
+| `label-after-jump` | AST, [dataflow](#dataflow) | below | C7 |
+| `opaque-name` | AST | below | C0 (C0.a, C0.c) |
+| `raw-memory` | AST | below | C8 |
+| `raw-hardware` | AST | below | C9 |
 
-Codes used: C2.a extraneous code, C3.a extraneous typecast, C5.a.i extraneous variable
+Codes used: C0 incorrect identifier name (C0.a variable, C0.c function), C2.a extraneous
+code, C3.a extraneous typecast, C5.a.i extraneous variable
 duplicating another, C7 obfuscating control-flow refactoring, C7.b canonical for loop as
-while loop, C7.c inline function definition instead of function call.
+while loop, C7.c inline function definition instead of function call, C8 issue in
+representing global variable, C9 uses expanded symbol.
+
+The checks of `opaque-name`, `raw-memory`, `raw-hardware`, `label-after-jump` and
+[size](#size) are `wayward_eagle.legible`.
 
 ### `common-arm-statements`
 
@@ -153,6 +165,75 @@ C7.d (deconstructed ternary) codes the `if`/`else` whose arms each only assign o
 variable; an edge copy is the same merge of values spread over the control flow at any join
 and with arms doing more, so it takes the category, C7.
 
+### `label-after-jump`
+
+A label whose join in the function's control-flow graph (`build(body, noreturn,
+gotos=True)`, each named `goto` a vertex of its own) is reachable and entered only from
+`goto` vertices: whatever precedes it returns, jumps, breaks, continues or calls a
+`noreturn` function on every path, so its code is reached only through the label. One site
+per label, its detail the label. A label nothing jumps to and nothing falls into is
+unreachable and no site.
+
+### `opaque-name`
+
+An identifier whose name carries no meaning beyond a number. The identifiers are those the
+file names outside a macro's body (or in a macro's argument): variables, parameters,
+functions and enumerators it declares or references, labels, and the object-like macros it
+expands. Each name is read as tokens: underscores, words, and numbers, a number being a run
+of hexadecimal digits of one letter case that holds a decimal digit (`f3_L4` is number,
+`_`, `L`, number; `K_A0` is `K`, `_`, number; `K_AF` holds no number). A name is opaque
+when it holds a number and either
+
+- every word in it is one letter (`v13`, `B0r`, `S_108`): a letter tags a kind, not a
+  meaning; or
+- another name of the file has the same tokens but for its numbers (`cgen_play_x1` and
+  `cgen_play_x2`, `R0_ORG` and `R1_ORG`): what tells them apart is only a number.
+
+One site per distinct opaque name, where the file first names it, its detail the name;
+`names` gives their number and the number of distinct names. A word made only of hex
+letters (`K_AF`) is a word: hex without a decimal digit cannot be told from one.
+
+### `raw-memory`
+
+Every subscript of a file-scope array that is a memory block: one array object standing in
+for many variables. Each subscript's address, the array's and the subscript's terms added
+through `+`, `-`, negation and casts to integer types (so a macro `#define R2 (C0 + 8)`
+makes `R2[i]` a subscript of `C0` at offset 8), is the array, a constant offset, and an
+index (the other terms, by AST equality, up to order). Subscripts holding an index touch
+one object when they are joined by:
+
+- a shared offset: one base, indexed two ways (`m[0x10 + i]`, `m[0x10 + j]`);
+- one index with offsets one apart: neighbouring elements (`m[i]`, `m[i + 1]`).
+
+An array whose indexed subscripts touch more than one object is a block (`m[0x10 + i]` and
+`m[0x20 + i]` are two variables); each of its subscripts, constant ones included, is a site,
+its detail the array and the offset. Constant subscripts decide nothing, since a real array's
+elements may each be read by a constant (`t[0]`, `t[1]`), so an array read only by
+constants is no block. A real array read at `a[i]` and `a[n - 1]`, with neither `a[i - 1]`
+nor `a[n]`, is read as two objects.
+
+Grouping offsets by index and joining groups that share any offset does not tell a block
+apart: a block's first variable is commonly indexed by several indices at offset 0, which
+joins every group through it.
+
+### `raw-hardware`
+
+An integer used as an address whose constant is a nonzero sum holding a literal spelled in
+the file (not in a macro's body): converted to a pointer (`*(volatile uint8_t *)0xD020`),
+or passed to an address parameter (`io_write(0xD401 + v, x)`), detail the callee (`*` for a
+conversion), the constant, and whether an index is added. A parameter is an address when its
+function converts it to a pointer, or passes it to an address parameter, whole (under casts
+to integer types): a least fixed point over the file's functions, so wrappers of an accessor
+defined in the file are found. A parameter added to a constant is an index, not an address,
+so a call passing a register's offset (`voice(7)` where `voice` writes `0xD404 + o`) is no
+site; the address inside is. A constant a macro names (`out(SID, 0)`) is named, not raw.
+
+### Size
+
+Each function's `lines` (from its first line to its last) and `statements`, as clang counts
+them: an expression, `return`, jump, `if`, loop or `switch` is one, a declaration statement
+one however many variables it declares, and blocks, labels and empty statements none.
+
 ### `uncounted-loop`
 
 A loop and an automatic integer variable `v` whose address is never taken, where:
@@ -194,8 +275,9 @@ Checkable on C alone, and not yet classes:
 | C11 | abuse of memory layout | a store through a pointer cast to a type wider than its object |
 | C12.a | return value for void function | a function whose every call discards its result |
 
-Not checkable without the original source: C0, C2.b, C3.b, C4, C4.a.ii, C4.a.iii, C4.b,
-C4.c, C5.a, C5.b, C6.a, C6.b, C6.d, C8, C9, C12.b, C13, C14.
+Not checkable without the original source: C0 beyond generic names, C2.b, C3.b, C4, C4.a.ii, C4.a.iii, C4.b,
+C4.c, C5.a, C5.b, C6.a, C6.b, C6.d, C8 and C9 beyond memory blocks and raw addresses,
+C12.b, C13, C14.
 
 ## Dataflow
 
@@ -204,7 +286,7 @@ read, for any analysis of a function body:
 
 | API | Result |
 |---|---|
-| `build(body, noreturn=...)` | `CFG` of a `FuncDef`'s body: `nodes[i]` the expression, declaration, condition, `return` or computed `goto` vertex `i` evaluates, or None for a join of statement `origin[i]`; `succ`, `pred` (reachable), `entry`, `exit`, `order` (reverse postorder), `reachable`, `joins()`. A top-level comma splits into vertices; a statement calling a function `noreturn` holds of has no successor; a computed `goto` enters every label |
+| `build(body, noreturn=..., gotos=False)` | `CFG` of a `FuncDef`'s body: `nodes[i]` the expression, declaration, condition, `return` or computed `goto` vertex `i` evaluates, or None for a join of statement `origin[i]`; `succ`, `pred` (reachable), `entry`, `exit`, `order` (reverse postorder), `reachable`, `joins()`. A top-level comma splits into vertices; a statement calling a function `noreturn` holds of has no successor; a computed `goto` enters every label; with `gotos`, each named `goto` is a vertex entering its label |
 | `solve(cfg, gen, kill, universe=None, forward=True)` | `(into, out)` bit sets per vertex of a worklist bit-vector problem: may (union), or must (intersection, starting from `universe`); forward or backward |
 | `Flow(unit, fd, effect=None, copyable=None)` | the function's owned variables `own` (automatic variables and parameters neither array, volatile, nor addressed by `&` or inline assembly), each vertex's `facts` (reads, stores, whether it may write memory), and `defs` (each definition, a parameter's on entry, whether it surely stores, and what a copy copies) |
 | `Flow.reaching()`, `Flow.available()`, `Flow.liveness()` | reaching definitions, available copies, live variables per vertex |
@@ -231,6 +313,8 @@ include = ["out/census", "c64"]
 key = "{stem}:{class}"
 total = "{stem}:cognitive-complexity"
 locals = "{stem}:locals"
+lines = "{stem}:lines"
+statements = "{stem}:statements"
 ```
 
 | Option | Default | Meaning |
@@ -240,6 +324,7 @@ locals = "{stem}:locals"
 | `key` | `{stem}:{class}` | `str.format` template over `stem`, `path`, `class`, `function`; values are site counts |
 | `total` | `{stem}:cognitive-complexity` | template over `stem` and `path`; the value is the file's total cognitive complexity |
 | `locals` | `{stem}:locals` | template over `stem` and `path`; the value is the file's total of automatic local variables (`locals` of `--json`); empty for no key |
+| `lines`, `statements` | `{stem}:lines`, `{stem}:statements` | templates over `stem` and `path`; the value is the most lines, or statements, of a function of the file; empty for no key |
 
 Without `{function}` in `key`, every class of every file is a key, at zero when it has no
 site, so a class returning to a file is worse than its budget. `cognitive-complexity`
