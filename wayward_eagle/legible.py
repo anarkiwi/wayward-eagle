@@ -5,7 +5,6 @@ reached only by jumps, and each function's size (docs/census.md)."""
 from __future__ import annotations
 
 from collections import Counter
-from itertools import groupby
 from typing import NamedTuple
 
 from pycparser import c_ast
@@ -16,7 +15,6 @@ from .c.flow import build
 HEX = frozenset("0123456789abcdefABCDEF")
 #: The width of ``int`` constants are evaluated in.
 BITS = 32
-NUMBER = "#"
 
 
 class Site(NamedTuple):
@@ -31,49 +29,35 @@ class Site(NamedTuple):
 # opaque-name.
 
 
-def _numbers(run):
-    """Hex-digit run ``run`` split where its letters change case, each piece holding a
-    decimal digit a number."""
-    out, piece, case = [], "", None
-    for ch in run:
-        if ch.isalpha() and case is not None and ch.isupper() != case:
-            out.append(piece)
-            piece = ""
-        piece += ch
-        case = ch.isupper() if ch.isalpha() else case
-    out.append(piece)
-    return [NUMBER if any(c.isdigit() for c in p) else p for p in out]
+def words(name):
+    """``name``'s words: split at underscores, between letters and digits, and at camel case
+    (before an upper-case letter after a lower-case one, or before the last upper-case
+    letter of a run followed by a lower-case one), so ``f12_1`` is ``f``, ``12``, ``1`` and
+    ``readHWReg`` is ``read``, ``HW``, ``Reg``."""
+    out, word = [], ""
+    for i, ch in enumerate(name):
+        prev, nxt = name[i - 1] if i else "", name[i + 1 : i + 2]
+        cut = word and (
+            prev.isdigit() != ch.isdigit()
+            or (prev.islower() and ch.isupper())
+            or (prev.isupper() and ch.isupper() and nxt.islower())
+        )
+        if ch == "_" or cut:
+            out += [word] if word else []
+            word = ""
+        word += "" if ch == "_" else ch
+    return out + ([word] if word else [])
 
 
-def shape(name):
-    """``name`` as tokens: underscores, words, and each number in it (a run of hexadecimal
-    digits of one letter case holding a decimal digit) ``NUMBER``, so ``f3_L4`` is
-    ``("#", "_", "L", "#")``."""
-    raw = []
-    for kind, run in groupby(name, lambda ch: "_" if ch == "_" else ch in HEX):
-        run = "".join(run)
-        raw += list(run) if kind == "_" else _numbers(run) if kind else [run]
-    out = []
-    for t in raw:
-        if out and "_" not in (t, out[-1]) and (t == NUMBER) == (out[-1] == NUMBER):
-            out[-1] = NUMBER if t == NUMBER else out[-1] + t
-        else:
-            out.append(t)
-    return tuple(out)
-
-
-def bare_tag(tokens):
-    """Whether ``tokens`` (a :func:`shape`) hold a number and no word: every run of letters
-    in them is one letter long."""
-    return NUMBER in tokens and all(len(t) == 1 for t in tokens if t not in (NUMBER, "_"))
+def meaningful(word):
+    """Whether ``word`` carries meaning: two letters or more, not all hexadecimal digits (a
+    single letter tags a kind, a number or hex tag an address)."""
+    return len(word) > 1 and not word.isdigit() and not set(word) <= HEX
 
 
 def opaque(names):
-    """The names of ``names`` whose meaning is only a number: a :func:`bare_tag`, or one whose
-    :func:`shape`, holding a number, another name shares (they differ only by number)."""
-    shapes = {n: shape(n) for n in names}
-    family = Counter(shapes.values())
-    return {n for n, s in shapes.items() if bare_tag(s) or (NUMBER in s and family[s] > 1)}
+    """The names of ``names`` no word of which carries meaning (:func:`meaningful`)."""
+    return {n for n in names if not any(map(meaningful, words(n)))}
 
 
 def _here(unit, loc):

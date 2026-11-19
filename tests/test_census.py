@@ -13,7 +13,7 @@ from wayward_eagle import census as cen
 from wayward_eagle.cli import main
 
 FUZZ = pathlib.Path(__file__).parent / "fixtures" / "fuzz"
-HEAD = "#include <stdint.h>\nint g;\nvoid tick(void);\n"
+HEAD = "#include <stdint.h>\nint glob;\nvoid tick(void);\n"
 
 #: class: (C with a site of it, C with none, compiler arguments).
 CASES = {
@@ -23,8 +23,8 @@ CASES = {
         (),
     ),
     "branch-clone": (
-        "void f(int c) { if (c) { g = 1; } else { g = 1; } }",
-        "void f(int c) { if (c) { g = 1; } else { g = 2; } }",
+        "void f(int c) { if (c) { glob = 1; } else { glob = 1; } }",
+        "void f(int c) { if (c) { glob = 1; } else { glob = 2; } }",
         (),
     ),
     "redundant-cast": (
@@ -53,8 +53,8 @@ CASES = {
         (),
     ),
     "assignment-in-if": (
-        "void f(int c) { if ((g = c)) { tick(); } }",
-        "void f(int c) { g = c; if (g) { tick(); } }",
+        "void f(int c) { if ((glob = c)) { tick(); } }",
+        "void f(int c) { glob = c; if (glob) { tick(); } }",
         (),
     ),
     "inc-dec-in-condition": (
@@ -84,9 +84,9 @@ CASES = {
     ),
     "common-arm-statements": (
         "void f(int c, int x) { uint8_t v5;"
-        " if (c) { v5 = 2; } else { g = x; v5 = 2; } g = v5; }",
+        " if (c) { v5 = 2; } else { glob = x; v5 = 2; } glob = v5; }",
         "void f(int c, int x) { uint8_t v5;"
-        " if (c) { v5 = 2; } else { g = x; v5 = 3; } g = v5; }",
+        " if (c) { v5 = 2; } else { glob = x; v5 = 3; } glob = v5; }",
         (),
     ),
     "subsumed-cast": (
@@ -100,9 +100,9 @@ CASES = {
         (),
     ),
     "status-call": (
-        "int h(int c) { if (c) { g = c; return 1; } return 0; }\n"
+        "int h(int c) { if (c) { glob = c; return 1; } return 0; }\n"
         "void f(int c) { if (h(c)) { return; } tick(); }",
-        "int h(int c) { g = c; return c; }\nvoid f(int c) { if (h(c)) { return; } tick(); }",
+        "int h(int c) { glob = c; return c; }\nvoid f(int c) { if (h(c)) { return; } tick(); }",
         (),
     ),
     "copy-variable": (
@@ -126,8 +126,8 @@ CASES = {
         (),
     ),
     "duplicate-code": (
-        "void f(int c) { if (c) { g = 1; tick(); } g = 2; g = 1; tick(); }",
-        "void f(int c) { if (c) { g = 1; tick(); } g = 2; g = 3; tick(); }",
+        "void f(int c) { if (c) { glob = 1; tick(); } glob = 2; glob = 1; tick(); }",
+        "void f(int c) { if (c) { glob = 1; tick(); } glob = 2; glob = 3; tick(); }",
         (),
     ),
     "label-after-jump": (
@@ -136,8 +136,8 @@ CASES = {
         (),
     ),
     "opaque-name": (
-        "void f(int v1, int v2) { g = v1 + v2; }",
-        "void f(int lo, int hi) { g = lo + hi; }",
+        "void f(int v1, int v2) { glob = v1 + v2; }",
+        "void sum(int lo, int hi) { glob = lo + hi; }",
         (),
     ),
     "raw-memory": (
@@ -251,41 +251,45 @@ def test_subsumed_cast_by_context(tmp_path, body, found):
 @pytest.mark.parametrize(
     "body, n",
     [
-        ("void f(int c) { if (c) { tick(); g = 1; } else { tick(); g = 2; } }", 1),
-        ("void f(int c) { if (c) { g = 1; tick(); } else { g = 2; tick(); } }", 1),
-        ("void f(int c) { if (c) { g = 1; } else { g = 2; } }", 0),
-        ("void f(int c) { if (c) { tick(); g = 1; } else if (c > 1) { tick(); g = 2; } }", 0),
+        ("void f(int c) { if (c) { tick(); glob = 1; } else { tick(); glob = 2; } }", 1),
+        ("void f(int c) { if (c) { glob = 1; tick(); } else { glob = 2; tick(); } }", 1),
+        ("void f(int c) { if (c) { glob = 1; } else { glob = 2; } }", 0),
+        ("void f(int c) { if (c) { tick(); glob = 1; } else if (c > 1) { tick(); glob = 2; } }", 0),
         (
-            "void f(int c) { if (c) { tick(); g = 1; } else if (c > 1) { tick(); g = 2; }"
-            " else { tick(); g = 3; } }",
+            "void f(int c) { if (c) { tick(); glob = 1; } else if (c > 1) { tick(); glob = 2; }"
+            " else { tick(); glob = 3; } }",
             1,
         ),
-        ("void f(void) { if (g) { tick(); g = 0; } else { g = 0; } }", 1),
-        ("void f(void) { if (g) { g = 0; tick(); } else { g = 0; g = 1; } }", 0),
-        ("void f(int c) { if (c) { c = 0; tick(); } else { c = 0; g = 1; } }", 0),
-        ("void f(int c) { int v; if (c) { v = 0; tick(); } else { v = 0; g = 1; } g = v; }", 1),
-        ("void f(int c) { if (g) { tick(); g = 1; } else { tick(); g = 2; } }", 0),
-        ("int h(void); void f(void) { if (h()) { g = 1; tick(); } else { g = 1; } }", 0),
+        ("void f(void) { if (glob) { tick(); glob = 0; } else { glob = 0; } }", 1),
+        ("void f(void) { if (glob) { glob = 0; tick(); } else { glob = 0; glob = 1; } }", 0),
+        ("void f(int c) { if (c) { c = 0; tick(); } else { c = 0; glob = 1; } }", 0),
         (
-            "void f(int c) { switch (c) { case 1: g = 1; tick(); break;"
-            " default: g = 2; tick(); } }",
+            "void f(int c) { int v; if (c) { v = 0; tick(); } "
+            " else { v = 0; glob = 1; } glob = v; }",
+            1,
+        ),
+        ("void f(int c) { if (glob) { tick(); glob = 1; } else { tick(); glob = 2; } }", 0),
+        ("int h(void); void f(void) { if (h()) { glob = 1; tick(); } else { glob = 1; } }", 0),
+        (
+            "void f(int c) { switch (c) { case 1: glob = 1; tick(); break;"
+            " default: glob = 2; tick(); } }",
             1,
         ),
         (
-            "void f(int c) { switch (c) { case 1: case 2: tick(); g = 1; break;"
-            " default: tick(); g = 2; break; } }",
+            "void f(int c) { switch (c) { case 1: case 2: tick(); glob = 1; break;"
+            " default: tick(); glob = 2; break; } }",
             1,
         ),
-        ("void f(int c) { switch (c) { case 1: g = 1; tick(); break; } }", 0),
+        ("void f(int c) { switch (c) { case 1: glob = 1; tick(); break; } }", 0),
         (
-            "void f(int c) { switch (c) { case 1: g = 1; tick(); return;"
-            " default: g = 2; tick(); } }",
+            "void f(int c) { switch (c) { case 1: glob = 1; tick(); return;"
+            " default: glob = 2; tick(); } }",
             0,
         ),
-        ("void f(int c) { switch (c) { case 1: g = 1; default: g = 2; } }", 0),
-        ("void f(int c) { switch (c) { tick(); case 1: g = 1; break; default: g = 2; } }", 0),
+        ("void f(int c) { switch (c) { case 1: glob = 1; default: glob = 2; } }", 0),
+        ("void f(int c) { switch (c) { tick(); case 1: glob = 1; break; default: glob = 2; } }", 0),
         (
-            "void f(int c) { if (c) { int t = g; g = t; } else { int t = c; g = t; } }",
+            "void f(int c) { if (c) { int t = glob; glob = t; } else { int t = c; glob = t; } }",
             0,
         ),
     ],
@@ -305,24 +309,24 @@ def test_common_arm_statements(tmp_path, body, n):
             True,
         ),
         ("void f(void) { uint8_t v = 2; while (v && (v = v - 1, 1)) { tick(); } }", True),
-        ("void f(void) { uint8_t v = 2; g = 1; while (v) { tick(); v = 1 + v; } }", True),
+        ("void f(void) { uint8_t v = 2; glob = 1; while (v) { tick(); v = 1 + v; } }", True),
         ("void f(void) { uint8_t v = 2; for (; v; v++) { tick(); } }", True),
         ("void f(void) { uint8_t v; for (v = 2; v; v++) { tick(); } }", False),
         ("void f(void) { uint8_t v; for (v = 2; v;) { tick(); v++; } }", True),
-        ("void f(void) { uint8_t v = 2; while (v) { if (g) { continue; } v--; } }", False),
-        ("void f(void) { uint8_t v = 2; while (v) { if (g) { v--; } } }", False),
+        ("void f(void) { uint8_t v = 2; while (v) { if (glob) { continue; } v--; } }", False),
+        ("void f(void) { uint8_t v = 2; while (v) { if (glob) { v--; } } }", False),
         ("void f(void) { uint8_t v = 2; while (v) { v--; v--; } }", False),
         ("void f(void) { uint8_t v = 2; while (v) { v = v * 2; } }", False),
-        ("void f(void) { uint8_t v = 2; while (v) { v = g - v; } }", False),
-        ("void f(void) { uint8_t v = 2; while (v) { v += g; } }", False),
-        ("void f(void) { uint8_t v = g; while (v) { v--; } }", False),
-        ("void f(void) { uint8_t v = 2; g = v; while (v) { v--; } }", False),
+        ("void f(void) { uint8_t v = 2; while (v) { v = glob - v; } }", False),
+        ("void f(void) { uint8_t v = 2; while (v) { v += glob; } }", False),
+        ("void f(void) { uint8_t v = glob; while (v) { v--; } }", False),
+        ("void f(void) { uint8_t v = 2; glob = v; while (v) { v--; } }", False),
         ("void f(void) { uint8_t v = 2; uint8_t *p = &v; while (v) { v--; } (void)p; }", False),
         ("void f(void) { static uint8_t v = 2; while (v) { v--; } }", False),
-        ("void f(void) { uint8_t v = 2; while (g) { v--; } }", False),
-        ("void f(void) { uint8_t v = 2; while (g || (v = v - 1, 1)) { tick(); } }", False),
-        ("void f(void) { uint8_t v = 2; l:; while (v) { v--; if (g) goto l; } }", False),
-        ("void f(void) { uint8_t v = 2; l:; while (v) { v--; } if (g) goto l; }", False),
+        ("void f(void) { uint8_t v = 2; while (glob) { v--; } }", False),
+        ("void f(void) { uint8_t v = 2; while (glob || (v = v - 1, 1)) { tick(); } }", False),
+        ("void f(void) { uint8_t v = 2; l:; while (v) { v--; if (glob) goto l; } }", False),
+        ("void f(void) { uint8_t v = 2; l:; while (v) { v--; } if (glob) goto l; }", False),
     ],
 )
 def test_uncounted_loop(tmp_path, body, found):
@@ -336,9 +340,9 @@ def test_uncounted_loop(tmp_path, body, found):
     [
         ("int __attribute__((pure)) h(int); void f(int c) { if (h(c)) { tick(); } }", False),
         ("int __attribute__((const)) h(int); void f(int c) { if (h(c)) { tick(); } }", False),
-        ("int h(int c) { return c + g; }\nvoid f(int c) { if (h(c)) { tick(); } }", False),
+        ("int h(int c) { return c + glob; }\nvoid f(int c) { if (h(c)) { tick(); } }", False),
         ("int h(int c) { int t = c; t++; return t; }\nvoid f(int c) { if (h(c)) tick(); }", False),
-        ("int h(int c) { g = c; return c; }\nvoid f(int c) { if (h(c)) { tick(); } }", True),
+        ("int h(int c) { glob = c; return c; }\nvoid f(int c) { if (h(c)) { tick(); } }", True),
         ("int h(int c) { tick(); return c; }\nvoid f(int c) { if (h(c)) { tick(); } }", True),
         ("int h(int);\nint j(int c) { return h(c); }\nvoid f(int c) { if (j(c)) tick(); }", True),
         ("int h(int c) { return c ? h(c - 1) : 0; }\nvoid f(int c) { if (h(c)) tick(); }", False),
@@ -355,7 +359,7 @@ def test_effect_in_condition(tmp_path, body, found):
     assert bool(sites(tmp_path, body, (), "effect-in-condition")) == found
 
 
-STATUS = "int h(int c) { if (c) { g = c; return 1; } return 0; }\n"
+STATUS = "int h(int c) { if (c) { glob = c; return 1; } return 0; }\n"
 
 
 @pytest.mark.parametrize(
@@ -366,13 +370,16 @@ STATUS = "int h(int c) { if (c) { g = c; return 1; } return 0; }\n"
         ("void f(int c) { if (0 != h(c)) { tick(); } }", True),
         ("void f(int c) { while (h(c)) { tick(); } }", True),
         ("void f(int c) { if (h(c) + 1) { tick(); } }", False),
-        ("void f(int c) { if (h(c) == g) { tick(); } }", False),
+        ("void f(int c) { if (h(c) == glob) { tick(); } }", False),
         ("void f(int c) { if (h(c = 2)) { tick(); } }", False),
-        ("void f(int c) { int a[2] = {0}; if (h(c)) { tick(); } g = a[c]; }", False),
-        ("void f(int c) { int x = 0; int *p = &x; if (h(c)) { tick(); } g = *p; }", False),
+        ("void f(int c) { int a[2] = {0}; if (h(c)) { tick(); } glob = a[c]; }", False),
+        ("void f(int c) { int x = 0; int *p = &x; if (h(c)) { tick(); } glob = *p; }", False),
         ("int k(int);\nvoid f(int c) { if (k(c)) { tick(); } }", False),
-        ("int k(int c) { g = c; return g; }\nvoid f(int c) { if (k(c)) { tick(); } }", False),
-        ("int k(int c) { g = c; return 0; }\nvoid f(int c) { if (k(c) && h(c)) tick(); }", False),
+        ("int k(int c) { glob = c; return glob; }\nvoid f(int c) { if (k(c)) { tick(); } }", False),
+        (
+            "int k(int c) { glob = c; return 0; }\nvoid f(int c) { if (k(c) && h(c)) tick(); }",
+            False,
+        ),
     ],
 )
 def test_status_call(tmp_path, body, status):
@@ -387,16 +394,16 @@ def test_status_call(tmp_path, body, status):
     "body, detail",
     [
         ("int f(int a) { int v = a; tick(); return v + 1; }", "v copies a"),
-        ("int f(void) { int v = g; return v + 1; }", "v copies g"),
-        ("int f(void) { int v = g; tick(); return v; }", None),
+        ("int f(void) { int v = glob; return v + 1; }", "v copies glob"),
+        ("int f(void) { int v = glob; tick(); return v; }", None),
         (
-            "int h(int c) { return c + 1; }\nint f(void) { int v = g; return h(v) + v; }",
-            "v copies g",
+            "int h(int c) { return c + 1; }\nint f(void) { int v = glob; return h(v) + v; }",
+            "v copies glob",
         ),
         ("int f(int a, int c) { int v = a; if (c) { v = 3; } return v; }", None),
         ("int f(void) { uint8_t v = 2; tick(); return v; }", "v copies 2"),
         ("int f(long a) { int v = a; return v; }", None),
-        ("int f(void) { int v; v = g; return v; }", "v copies g"),
+        ("int f(void) { int v; v = glob; return v; }", "v copies glob"),
         (
             "int f(int a) { int s = 0; int v = a; for (int i = 0; i < 3; i++) { s += v; }"
             " return s; }",
@@ -407,8 +414,8 @@ def test_status_call(tmp_path, body, status):
         ("int f(int a, int b) { int v = a; return (a = b, v); }", None),
         ("int f(int a) { int v = a; a = v + 1; return a; }", "v copies a"),
         ("int f(int a, int c) { int v; if (c) { v = a; } return v; }", None),
-        ("int f(int a) { int v = a; l: tick(); if (g) { goto l; } return v; }", "v copies a"),
-        ("int f(int a) { int v = a; l: a++; if (g) { goto l; } return v; }", None),
+        ("int f(int a) { int v = a; l: tick(); if (glob) { goto l; } return v; }", "v copies a"),
+        ("int f(int a) { int v = a; l: a++; if (glob) { goto l; } return v; }", None),
         ("void f(int a) { int v = a; }", None),
         (
             "int f(int a, int c) { int v = a; switch (c) { case 1: a = 0; break;"
@@ -416,8 +423,8 @@ def test_status_call(tmp_path, body, status):
             None,
         ),
         ("int f(int a, int *p) { int v = a; *p = 1; return v; }", "v copies a"),
-        ("int f(int *p) { int v = g; *p = 1; return v; }", None),
-        ("uint8_t b[2];\nint f(void) { int v = g; b[1] = 1; return v; }", "v copies g"),
+        ("int f(int *p) { int v = glob; *p = 1; return v; }", None),
+        ("uint8_t b[2];\nint f(void) { int v = glob; b[1] = 1; return v; }", "v copies glob"),
         ("void f(int a) { int v = a; while (v) { a = 0; } }", None),
     ],
 )
@@ -432,19 +439,27 @@ def test_copy_variable(tmp_path, body, detail):
     "body, n",
     [
         ("int f(int a, int c) { int v; if (c) { v = a; } else { v = 2; } return v; }", 1),
-        ("void f(int c, int x) { uint8_t v; if (c) { v = 2; } else { g = x; v = 2; } g = v; }", 0),
-        ("void f(int c, int x) { uint8_t v; if (c) { v = 2; tick(); } else { v = 2; } g = v; }", 0),
         (
-            "void f(int c, int x) { uint8_t v; if (c) { g = 1; v = 2; g = 3; }"
-            " else { g = x; v = 2; tick(); } g = v; }",
+            "void f(int c, int x) { uint8_t v; if (c) { v = 2; } "
+            " else { glob = x; v = 2; } glob = v; }",
+            0,
+        ),
+        (
+            "void f(int c, int x) { uint8_t v; if (c) { v = 2; tick(); }"
+            " else { v = 2; } glob = v; }",
+            0,
+        ),
+        (
+            "void f(int c, int x) { uint8_t v; if (c) { glob = 1; v = 2; glob = 3; }"
+            " else { glob = x; v = 2; tick(); } glob = v; }",
             1,
         ),
-        ("int f(int a, int c) { int v = a; if (c) { g = 1; } return v; }", 0),
-        ("int f(int a, int c) { int v; if (c) { v = a; g = v; } else { v = 2; } return v; }", 0),
+        ("int f(int a, int c) { int v = a; if (c) { glob = 1; } return v; }", 0),
+        ("int f(int a, int c) { int v; if (c) { v = a; glob = v; } else { v = 2; } return v; }", 0),
         ("int f(int a, int c) { int v = 1; if (c) { v = a; } return v; }", 1),
-        ("int f(int a) { int v = 0; while (g) { tick(); v = a; } return v; }", 1),
+        ("int f(int a) { int v = 0; while (glob) { tick(); v = a; } return v; }", 1),
         ("int f(void) { int v = 0; while (v < 3) { v = v + 1; } return v; }", 0),
-        ("int f(int a) { int v = 0; l: tick(); if (g) { v = a; goto l; } return v; }", 1),
+        ("int f(int a) { int v = 0; l: tick(); if (glob) { v = a; goto l; } return v; }", 1),
         (
             "int f(int a, int c) { int v; switch (c) { case 1: v = a; break;"
             " default: v = 3; } return v; }",
@@ -475,7 +490,7 @@ def test_locals_per_function(tmp_path):
     """Each function's automatic variables are counted, parameters and statics aside."""
     path = tmp_path / "t.c"
     path.write_text(
-        HEAD + "void f(int c) { int a, b; static int s; { int t = c; g = t + a + b + s; } }\n"
+        HEAD + "void f(int c) { int a, b; static int s; { int t = c; glob = t + a + b + s; } }\n"
         "void h(void) { tick(); }\n",
         encoding="utf-8",
     )
@@ -485,8 +500,8 @@ def test_locals_per_function(tmp_path):
 def test_duplicate_sequences_are_maximal(tmp_path):
     """A repeated sequence is reported once, at its longest, with every copy."""
     body = (
-        "void f(int c) { g = 1; tick(); g = 2; if (c) { g = 1; tick(); g = 2; }"
-        " { g = 1; tick(); } }"
+        "void f(int c) { glob = 1; tick(); glob = 2; if (c) { glob = 1; tick(); glob = 2; }"
+        " { glob = 1; tick(); } }"
     )
     got = sites(tmp_path, body, (), "duplicate-code")
     assert sorted(s.detail.split(" at ")[0] for s in got) == ["2 statements", "3 statements"]
@@ -494,7 +509,7 @@ def test_duplicate_sequences_are_maximal(tmp_path):
 
 def test_duplicate_code_ignores_names_of_its_own_locals(tmp_path):
     """Blocks declaring and using their own variables alike are duplicates."""
-    body = "void f(int c) { { int t = c; g = t; } { int t = c; g = t; } }"
+    body = "void f(int c) { { int t = c; glob = t; } { int t = c; glob = t; } }"
     assert len(sites(tmp_path, body, (), "duplicate-code")) == 1
 
 
@@ -562,7 +577,7 @@ def test_cli_text_and_json(tmp_path, capsys):
     got = json.loads(capsys.readouterr().out)[str(path)]
     assert got["counts"]["goto"] == 1 and got["complexity"] == {"f": 2}
     assert got["locals"] == {"f": 0} and got["lines"] == {"f": 1} and got["statements"] == {"f": 2}
-    assert got["names"] == {"opaque": 0, "declared": 5}
+    assert got["names"] == {"opaque": 2, "declared": 5}
     assert got["reasons"] == {"f": dict.fromkeys(cen.REASONS, 0)}
     assert {"cls": "goto", "function": "f", "line": 4, "detail": "out"} in got["sites"]
 
@@ -591,7 +606,7 @@ def test_adapter_keys(tmp_path):
             "statements": "",
         }
     )
-    assert by_fn == {"goto/f": 1, "copy-variable/f": 1, str(path): 2}
+    assert by_fn == {"goto/f": 1, "copy-variable/f": 1, "opaque-name/f": 3, str(path): 2}
     with pytest.raises(ValueError):
         cen.adapter({"files": [str(tmp_path / "none-*.c")]})
 
@@ -638,30 +653,31 @@ DEVICE = (
     "__attribute__((noreturn)) void die(void);\n"
     "__attribute__((const)) int k(void);\n"
     "__attribute__((pure)) int r(void);\n"
-    "void put(int v) { g = v; }\n"
+    "void put(int v) { glob = v; }\n"
     "void check(int v) { if (v) { die(); } }\n"
 )
 
 #: Function (after HEAD and DEVICE): the reason of each definition, by its source.
 REASONS = [
-    ("int f(void) { int t = g + 1; return t; }", {"int t = g + 1": "single-use"}),
-    ("void f(void) { int t = g; tick(); g = t; }", {"int t = g": "clobbered"}),
-    ("void f(void) { int t = g; k(); r(); g = t; }", {"int t = g": "single-use"}),
+    ("int f(void) { int t = glob + 1; return t; }", {"int t = glob + 1": "single-use"}),
+    ("void f(void) { int t = glob; tick(); glob = t; }", {"int t = glob": "clobbered"}),
+    ("void f(void) { int t = glob; k(); r(); glob = t; }", {"int t = glob": "single-use"}),
     ("void f(void) { int t = a[0]; out(1, 2); b[1] = t; }", {"int t = a[0]": "single-use"}),
-    ("void f(void) { int t = in(1); out(2, 3); g = t; }", {"int t = in(1)": "clobbered"}),
-    ("void f(void) { int t = a[0]; b[0] = 1; g = t; }", {"int t = a[0]": "single-use"}),
-    ("void f(void) { int t = a[0]; a[1] = 1; g = t; }", {"int t = a[0]": "single-use"}),
-    ("void f(void) { int t = a[0]; a[0] = 1; g = t; }", {"int t = a[0]": "clobbered"}),
-    ("void f(int c) { int t = a[0]; a[c] = 1; g = t; }", {"int t = a[0]": "clobbered"}),
-    ("void f(int c) { int t = a[c]; a[1] = 1; g = t; }", {"int t = a[c]": "clobbered"}),
-    ("void f(uint8_t *p) { int t = a[1]; *p = 1; g = t; }", {"int t = a[1]": "clobbered"}),
-    ("void f(void) { int t = *(a + 1); a[1] = 1; g = t; }", {"int t = *(a + 1)": "clobbered"}),
-    ("void f(int *p) { int t = a[0]; *p = 1; g = t; }", {"int t = a[0]": "clobbered"}),
+    ("void f(void) { int t = in(1); out(2, 3); glob = t; }", {"int t = in(1)": "clobbered"}),
+    ("void f(void) { int t = a[0]; b[0] = 1; glob = t; }", {"int t = a[0]": "single-use"}),
+    ("void f(void) { int t = a[0]; a[1] = 1; glob = t; }", {"int t = a[0]": "single-use"}),
+    ("void f(void) { int t = a[0]; a[0] = 1; glob = t; }", {"int t = a[0]": "clobbered"}),
+    ("void f(int c) { int t = a[0]; a[c] = 1; glob = t; }", {"int t = a[0]": "clobbered"}),
+    ("void f(int c) { int t = a[c]; a[1] = 1; glob = t; }", {"int t = a[c]": "clobbered"}),
+    ("void f(uint8_t *p) { int t = a[1]; *p = 1; glob = t; }", {"int t = a[1]": "clobbered"}),
+    ("void f(void) { int t = *(a + 1); a[1] = 1; glob = t; }", {"int t = *(a + 1)": "clobbered"}),
+    ("void f(int *p) { int t = a[0]; *p = 1; glob = t; }", {"int t = a[0]": "clobbered"}),
     (
-        "static const int K[2] = {1, 2};\nvoid f(int c, int *p) { int t = K[c]; *p = 0; g = t; }",
+        "static const int K[2] = {1, 2};\n"
+        "void f(int c, int *p) { int t = K[c]; *p = 0; glob = t; }",
         {"int t = K[c]": "single-use"},
     ),
-    ("int f(void) { int t = g; return t * t; }", {"int t = g": "multi-use"}),
+    ("int f(void) { int t = glob; return t * t; }", {"int t = glob": "multi-use"}),
     ("int f(int c) { int t = c + 1; c = 0; return t + c; }", {"int t = c + 1": "clobbered"}),
     (
         "int f(int c) { int t = c; t = t + 1; return t; }",
@@ -671,27 +687,36 @@ REASONS = [
         "int f(int c) { int t; if (c) { t = 1; } else { t = 2; } return t; }",
         {"t = 1": "merged", "t = 2": "merged"},
     ),
-    ("void f(void) { int t = g; t = 2; g = t; }", {"int t = g": "unused", "t = 2": "single-use"}),
     (
-        "void f(int c) { int t = c - 3; if (t > 5) { die(); } g = c; }",
+        "void f(void) { int t = glob; t = 2; glob = t; }",
+        {"int t = glob": "unused", "t = 2": "single-use"},
+    ),
+    (
+        "void f(int c) { int t = c - 3; if (t > 5) { die(); } glob = c; }",
         {"int t = c - 3": "check-only"},
     ),
     (
-        "void f(int c) { int t = c - 3; if (t > 5) { die(); } g = t; }",
+        "void f(int c) { int t = c - 3; if (t > 5) { die(); } glob = t; }",
         {"int t = c - 3": "multi-use"},
     ),
     (
-        "void f(void) { for (;;) { int t = in(1); if (t) { g = 1; } else { while (1) {} } } }",
+        "void f(void) { for (;;) { int t = in(1); if (t) { glob = 1; } else { while (1) {} } } }",
         {"int t = in(1)": "single-use"},
     ),
-    ("void f(void) { int t = g; g = t + 1; }", {"int t = g": "single-use"}),
-    ("void f(void) { int t = g; b[0] = (g = 1) + t; }", {"int t = g": "clobbered"}),
-    ("void f(void) { int t = g; put(t); }", {"int t = g": "single-use"}),
-    ("void f(void) { int t = g; check(1); b[0] = t; }", {"int t = g": "single-use"}),
-    ("void f(void) { int t = in(1); check(0); g = t; }", {"int t = in(1)": "clobbered"}),
-    ("void f(int n) { int t = g; while (n--) { g = 0; } b[0] = t; }", {"int t = g": "clobbered"}),
-    ("void f(int *p) { int t = sizeof(*p); *p = 1; g = t; }", {"int t = sizeof(*p)": "single-use"}),
-    ('void f(void) { int t = g; __asm__(""); b[0] = t; }', {"int t = g": "clobbered"}),
+    ("void f(void) { int t = glob; glob = t + 1; }", {"int t = glob": "single-use"}),
+    ("void f(void) { int t = glob; b[0] = (glob = 1) + t; }", {"int t = glob": "clobbered"}),
+    ("void f(void) { int t = glob; put(t); }", {"int t = glob": "single-use"}),
+    ("void f(void) { int t = glob; check(1); b[0] = t; }", {"int t = glob": "single-use"}),
+    ("void f(void) { int t = in(1); check(0); glob = t; }", {"int t = in(1)": "clobbered"}),
+    (
+        "void f(int n) { int t = glob; while (n--) { glob = 0; } b[0] = t; }",
+        {"int t = glob": "clobbered"},
+    ),
+    (
+        "void f(int *p) { int t = sizeof(*p); *p = 1; glob = t; }",
+        {"int t = sizeof(*p)": "single-use"},
+    ),
+    ('void f(void) { int t = glob; __asm__(""); b[0] = t; }', {"int t = glob": "clobbered"}),
 ]
 
 
@@ -720,10 +745,10 @@ def test_call_access(tmp_path):
     )
     unit = cen.Unit(path)
     got = [unit.call_access(x) for x in cen.q.calls(unit.functions[-1])]
-    g = next(i for i, s in unit.c.symbols.items() if s.name == "g")
+    glob = next(i for i, s in unit.c.symbols.items() if s.name == "glob")
     dev, every = frozenset({"device"}), frozenset({"device", "memory"})
     assert got == [
-        (frozenset(), frozenset({g})),
+        (frozenset(), frozenset({glob})),
         (dev, dev),
         (dev, dev),
         (frozenset(), frozenset()),

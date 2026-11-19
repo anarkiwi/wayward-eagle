@@ -21,29 +21,28 @@ def unit(tmp_path, body, header=None):
 
 
 @pytest.mark.parametrize(
-    "name, tokens",
+    "name, words",
     [
-        ("v13", ("v", "#")),
-        ("f3_L4_x2", ("#", "_", "L", "#", "_", "x", "#")),
-        ("cgen_play_x1", ("cgen", "_", "play", "_", "x", "#")),
-        ("K_A0", ("K", "_", "#")),
-        ("K_AF", ("K", "_", "AF")),
-        ("C0_AT73D", ("#", "_", "AT", "#")),
-        ("rdC0", ("rd", "#")),
-        ("uint8_t", ("uint", "#", "_", "t")),
-        ("tune_init", ("tune", "_", "init")),
+        ("v13", ["v", "13"]),
+        ("f3_L4_x2", ["f", "3", "L", "4", "x", "2"]),
+        ("cgen_play_x1", ["cgen", "play", "x", "1"]),
+        ("CGEN_OBJ0_ORG", ["CGEN", "OBJ", "0", "ORG"]),
+        ("K_AF", ["K", "AF"]),
+        ("B0c2", ["B", "0", "c", "2"]),
+        ("readHWReg", ["read", "HW", "Reg"]),
+        ("__x", ["x"]),
     ],
 )
-def test_shape(name, tokens):
-    """Numbers are runs of hex digits of one case holding a decimal digit; words stay."""
-    assert legible.shape(name) == tokens
+def test_words(name, words):
+    """Names split at underscores, letter-digit boundaries and camel case."""
+    assert legible.words(name) == words
 
 
-def test_opaque_names_are_bare_tags_or_number_families():
-    """A letter and a number is opaque alone; a longer name only beside another differing
-    from it only by number; a name without a number never."""
-    names = ["v1", "B0r", "x_2", "cgen_play_x1", "cgen_play_x2", "R0_ORG", "R1_ORG"]
-    words = ["crc32", "tune_init", "a", "K_AF", "lo", "hi"]
+def test_opaque_names_have_no_meaningful_word():
+    """A name is opaque when every word is a single letter, a number or a hex tag; a
+    meaningful word with a number beside it is not."""
+    names = ["v13", "S_108", "K_AF", "R1", "c48", "f12_1", "x3", "a", "B0c2", "S_1FF"]
+    words = ["g_freq_lo_2", "freq_hi", "voice", "ptr", "cgen_play_x1", "CGEN_OBJ0_ORG", "R0_ORG"]
     assert legible.opaque(names + words) == set(names)
 
 
@@ -59,7 +58,7 @@ def test_identifiers_seen_by_the_reader(tmp_path):
     assert set(names) == {"f", "v1", "g", "W", "K_1F", "L1", "tick", "trap"}
     assert names["v1"][1] == "f" and names["g"][1] == ""
     sites, declared = legible.opaque_names(u)
-    assert sorted(s.detail for s in sites) == ["K_1F", "L1", "v1"] and declared == 8
+    assert sorted(s.detail for s in sites) == ["K_1F", "L1", "W", "f", "g", "v1"] and declared == 8
 
 
 MEMORY = "uint8_t m[64];\nuint8_t t[4];\n"

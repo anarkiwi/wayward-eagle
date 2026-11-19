@@ -21,48 +21,42 @@ Two engines find sites, both pinned as dependencies so results do not depend on 
   `ziglang` wheel's clang, its JSON AST as `c_ast`, clang's types, implicit casts and
   declarations in the side table).
 
-Classes are keyed to the codes of Dramko et al., "A Taxonomy of C Decompiler Fidelity
-Issues" (USENIX Security 2024), from its codebook ([Zenodo 8419614](https://zenodo.org/records/8419614)):
-15 categories (`C0`..`C14`), 52 codes in all. A category without an issue code (`C7`) means
-the class is an instance of the category that no issue of it names; `none` means the
-codebook does not code it.
+Each class names the readability issue it finds, as Dramko et al., "A Taxonomy of C
+Decompiler Fidelity Issues" (USENIX Security 2024) describe it; the Ref. column cites its
+code in their codebook ([Zenodo 8419614](https://zenodo.org/records/8419614)), `none` where
+the codebook has no such issue.
 
 ## Classes
 
-| Class | Engine | Check | Taxonomy |
-|---|---|---|---|
-| `cognitive-complexity` | AST | `wayward_eagle.c.query.cognitive`, SonarSource's rules as clang-tidy's `readability-function-cognitive-complexity` counts them (`tools/cognitive_check.py` compares the two); one site per function above zero, at its name, its score the detail | C7 (a metric, not an issue) |
-| `branch-clone` | clang-tidy | `bugprone-branch-clone` | C2.a |
-| `redundant-cast` | clang-tidy | `readability-redundant-casting` | C3.a |
-| `redundant-expression` | clang-tidy | `misc-redundant-expression` | C2.a |
-| `simplifiable-boolean` | clang-tidy | `readability-simplify-boolean-expr` | C2.a |
-| `redundant-control-flow` | clang-tidy | `readability-redundant-control-flow` | none (a trailing `return;` is uncoded) |
-| `else-after-jump` | clang-tidy | `readability-else-after-return` | C7 |
-| `assignment-in-if` | clang-tidy | `bugprone-assignment-in-if-condition` | C7 |
-| `inc-dec-in-condition` | clang-tidy | `bugprone-inc-dec-in-conditions` | C7 |
-| `nested-conditional` | clang-tidy | `readability-avoid-nested-conditional-operator` | C7 |
-| `misleading-indentation` | clang-tidy | `readability-misleading-indentation` | none (layout is uncoded) |
-| `redundant-branch-condition` | clang-tidy | `bugprone-redundant-branch-condition` | C2.a |
-| `dead-store` | clang-tidy | `clang-analyzer-deadcode.DeadStores` | C2.a |
-| `common-arm-statements` | AST | below | C7 |
-| `subsumed-cast` | AST | below | C3.a |
-| `effect-in-condition` | AST | below | C7 |
-| `status-call` | AST | below | none (idiomatic: a step's exit code tested at once) |
-| `uncounted-loop` | AST | below | C7.b |
-| `goto` | AST | every `goto` and computed `goto` | C7 |
-| `duplicate-code` | AST | below | C7.c |
-| `copy-variable` | AST, [dataflow](#dataflow) | below | C5.a.i |
-| `edge-copy` | AST, [dataflow](#dataflow) | below | C7 |
-| `label-after-jump` | AST, [dataflow](#dataflow) | below | C7 |
-| `opaque-name` | AST | below | C0 (C0.a, C0.c) |
-| `raw-memory` | AST | below | C8 |
-| `raw-hardware` | AST | below | C9 |
+| Class | Engine | Check | Issue | Ref. |
+|---|---|---|---|---|
+| `cognitive-complexity` | AST | `wayward_eagle.c.query.cognitive`, SonarSource's rules as clang-tidy's `readability-function-cognitive-complexity` counts them (`tools/cognitive_check.py` compares the two); one site per function above zero, at its name, its score the detail | control flow too complex to follow (a metric, not an issue) | C7 |
+| `branch-clone` | clang-tidy | `bugprone-branch-clone` | extraneous code: identical branches | C2.a |
+| `redundant-cast` | clang-tidy | `readability-redundant-casting` | extraneous typecast | C3.a |
+| `redundant-expression` | clang-tidy | `misc-redundant-expression` | extraneous code: an expression with a known value | C2.a |
+| `simplifiable-boolean` | clang-tidy | `readability-simplify-boolean-expr` | extraneous code: a boolean expression longer than it needs | C2.a |
+| `redundant-control-flow` | clang-tidy | `readability-redundant-control-flow` | a jump to where control goes anyway | none |
+| `else-after-jump` | clang-tidy | `readability-else-after-return` | obscured control flow: an `else` after a jump | C7 |
+| `assignment-in-if` | clang-tidy | `bugprone-assignment-in-if-condition` | obscured control flow: an assignment in a condition | C7 |
+| `inc-dec-in-condition` | clang-tidy | `bugprone-inc-dec-in-conditions` | obscured control flow: an increment in a condition | C7 |
+| `nested-conditional` | clang-tidy | `readability-avoid-nested-conditional-operator` | obscured control flow: nested `?:` | C7 |
+| `misleading-indentation` | clang-tidy | `readability-misleading-indentation` | misleading layout | none |
+| `redundant-branch-condition` | clang-tidy | `bugprone-redundant-branch-condition` | extraneous code: a condition already known | C2.a |
+| `dead-store` | clang-tidy | `clang-analyzer-deadcode.DeadStores` | dead store | C2.a |
+| `common-arm-statements` | AST | below | obscured control flow: a statement repeated in every arm | C7 |
+| `subsumed-cast` | AST | below | extraneous typecast | C3.a |
+| `effect-in-condition` | AST | below | obscured control flow: an effect in a condition | C7 |
+| `status-call` | AST | below | none: a step's exit code tested at once is idiomatic | none |
+| `uncounted-loop` | AST | below | counted loop written as a `while` loop | C7.b |
+| `goto` | AST | every `goto` and computed `goto` | obscured control flow: a jump | C7 |
+| `duplicate-code` | AST | below | inlined function: code repeated instead of called | C7.c |
+| `copy-variable` | AST, [dataflow](#dataflow) | below | extraneous variable duplicating another | C5.a.i |
+| `edge-copy` | AST, [dataflow](#dataflow) | below | obscured control flow: one value merged by copies on each edge | C7 |
+| `label-after-jump` | AST, [dataflow](#dataflow) | below | obscured control flow: a label reached only by jumps | C7 |
+| `opaque-name` | AST | below | meaningless name | C0.a, C0.c |
+| `raw-memory` | AST | below | raw memory block standing in for variables | C8 |
+| `raw-hardware` | AST | below | raw hardware address instead of a named symbol | C9 |
 
-Codes used: C0 incorrect identifier name (C0.a variable, C0.c function), C2.a extraneous
-code, C3.a extraneous typecast, C5.a.i extraneous variable
-duplicating another, C7 obfuscating control-flow refactoring, C7.b canonical for loop as
-while loop, C7.c inline function definition instead of function call, C8 issue in
-representing global variable, C9 uses expanded symbol.
 
 The checks of `opaque-name`, `raw-memory`, `raw-hardware`, `label-after-jump` and
 [size](#size) are `wayward_eagle.legible`.
@@ -120,10 +114,10 @@ constant, of a function defined in the file that returns an integer and whose ev
 automatic variable of the caller is addressed (by `&`, or as an array), so the callee
 reaches none of the caller's objects. `if (step()) return;` is the site.
 
-The taxonomy codes no such issue: C7 codes control flow refactored to obscure it, and a call
-whose result is a status tested once, its effects invisible to the caller's variables, is
-how C writes a step that may fail; its only obscurity is that the step is elsewhere, which
-is extraction (the inverse of C7.c), not a defect of the condition. Its effect is the call's
+It is no issue: a call whose result is a status tested once, its effects invisible to the
+caller's variables, is how C writes a step that may fail, not control flow refactored to
+obscure it; its only obscurity is that the step is elsewhere, which is extraction (the
+inverse of an inlined function), not a defect of the condition. Its effect is the call's
 reason to exist, unlike a store, comma or increment folded into a condition, which stay
 `effect-in-condition`.
 
@@ -162,9 +156,9 @@ or ending every arm of an `if`/`switch`) are that class's alone: hoisting or sin
 statement leaves a single assignment that dominates the join, so the one defect is one site.
 Arms ending in different copies (`v = a` and `v = 2`) are only `edge-copy`.
 
-C7.d (deconstructed ternary) codes the `if`/`else` whose arms each only assign one
-variable; an edge copy is the same merge of values spread over the control flow at any join
-and with arms doing more, so it takes the category, C7.
+A deconstructed ternary is the `if`/`else` whose arms each only assign one variable; an edge
+copy is the same merge of values spread over the control flow at any join and with arms
+doing more, so it is obscured control flow in general.
 
 ### `label-after-jump`
 
@@ -177,22 +171,25 @@ unreachable and no site.
 
 ### `opaque-name`
 
-An identifier whose name carries no meaning beyond a number. The identifiers are those the
-file names outside a macro's body (or in a macro's argument): variables, parameters,
-functions and enumerators it declares or references, labels, and the object-like macros it
-expands. Each name is read as tokens: underscores, words, and numbers, a number being a run
-of hexadecimal digits of one letter case that holds a decimal digit (`f3_L4` is number,
-`_`, `L`, number; `K_A0` is `K`, `_`, number; `K_AF` holds no number). A name is opaque
-when it holds a number and either
+An identifier no word of whose name carries meaning. The identifiers are those the file
+names outside a macro's body (or in a macro's argument): variables, parameters, functions
+and enumerators it declares or references, labels, and the object-like macros it expands.
+A name splits into words at underscores, between letters and digits, and at camel case
+(before an upper-case letter following a lower-case one, and before the last of a run of
+upper-case letters followed by a lower-case one): `f12_1` is `f`, `12`, `1`; `B0c2` is
+`B`, `0`, `c`, `2`; `readHWReg` is `read`, `HW`, `Reg`. A word carries meaning when it has
+two letters or more and is not made only of hexadecimal digits; a single letter tags a
+kind, and a number or hex tag (`AF`, `1FF`) an address. So `v13`, `S_108`, `K_AF`, `R1`,
+`c48`, `f12_1`, `x3` and single-letter names (`i`, `p`) are opaque, and `g_freq_lo_2`,
+`freq_hi`, `voice` and `ptr` are not: a number disambiguating a meaningful name is fine.
 
-- every word in it is one letter (`v13`, `B0r`, `S_108`): a letter tags a kind, not a
-  meaning; or
-- another name of the file has the same tokens but for its numbers (`cgen_play_x1` and
-  `cgen_play_x2`, `R0_ORG` and `R1_ORG`): what tells them apart is only a number.
+No word is treated specially: a generator's prefix is a word like any other, so
+`cgen_play_x1` (`play`) and `CGEN_OBJ0_ORG` (`OBJ`, `ORG`) are not opaque. A word of hex
+letters only that is meant as a word (`ADC` in `S_D5_ADC`) counts as a tag: spelling alone
+cannot tell the two apart.
 
 One site per distinct opaque name, where the file first names it, its detail the name;
-`names` gives their number and the number of distinct names. A word made only of hex
-letters (`K_AF`) is a word: hex without a decimal digit cannot be told from one.
+`names` gives their number and the number of distinct names.
 
 ### `raw-memory`
 
@@ -242,14 +239,14 @@ automatic variable a function owns (see [dataflow](#dataflow); parameters aside)
 under the first reason of this order that holds of it, so a definition both used twice and
 clobbered is `clobbered`:
 
-| Reason | Holds when | Taxonomy |
-|---|---|---|
-| `unused` | no use of the variable reads it (its value is overwritten or dies) | C2.a (as `dead-store`) |
-| `check-only` | every use is in the condition of an `if` a branch of which surely ends in a call that never returns (`if ((uint16_t)(v - ORG) > LIM) trap(0xA);`): every path from the branch reaches a vertex without successors | C2.a (it feeds only a check the translation added) |
-| `clobbered` | on some path from it to a use, something may change what its value reads: an assignment to a variable it reads (its own, for `v = v + 1`), or a store or call that may write memory it reads; or, for a value with effects of its own, something reads or writes what it writes | none (the variable holds a value the program no longer has) |
-| `merged` | another definition of the variable reaches one of its uses too (a join of assignments on several paths, or a store to part of it) | none (assignment on several paths is how C merges values; `edge-copy` reports the extraneous ones) |
-| `multi-use` | its value is read more than once (counting each occurrence in a statement) | none (a value named for its several uses) |
-| `single-use` | its value is read once, and printing its defining expression there reads the same values | C5.a (extraneous variable: the expression could stand at its use) |
+| Reason | Holds when | Issue | Ref. |
+|---|---|---|---|
+| `unused` | no use of the variable reads it (its value is overwritten or dies) | dead store | C2.a |
+| `check-only` | every use is in the condition of an `if` a branch of which surely ends in a call that never returns (`if ((uint16_t)(v - ORG) > LIM) trap(0xA);`): every path from the branch reaches a vertex without successors | extraneous code: it feeds only a check the translation added | C2.a |
+| `clobbered` | on some path from it to a use, something may change what its value reads: an assignment to a variable it reads (its own, for `v = v + 1`), or a store or call that may write memory it reads; or, for a value with effects of its own, something reads or writes what it writes | none: the variable holds a value the program no longer has | none |
+| `merged` | another definition of the variable reaches one of its uses too (a join of assignments on several paths, or a store to part of it) | none: assignment on several paths is how C merges values (`edge-copy` reports the extraneous ones) | none |
+| `multi-use` | its value is read more than once (counting each occurrence in a statement) | none: a value named for its several uses | none |
+| `single-use` | its value is read once, and printing its defining expression there reads the same values | extraneous variable: the expression could stand at its use | C5.a |
 
 `single-use` is the removable class: a temporary the expression it holds could replace.
 `multi-use` definitions could be recomputed at each use too (nothing between changes what
@@ -305,25 +302,26 @@ clang's: one declaration statement, or a chain of `case` labels with its first s
 one. One site
 per distinct sequence, its detail its length and the lines of every copy.
 
-## Taxonomy codes not covered
+## Issues not covered
 
 Checkable on C alone, and not yet classes:
 
-| Code | Issue | What a check would find |
+| Issue | What a check would find | Ref. |
 |---|---|---|
-| C1.b.i, C1.b.ii | pointer dereference or arithmetic to access an array member | `*(p + i)` and `*p` over an array object instead of `p[i]` |
-| C1.a.i | pointer arithmetic to access a struct member | a dereference of a cast of pointer arithmetic, `*(T *)(p + k)` |
-| C4.a.i | extra arguments | parameters no path reads (`misc-unused-parameters`) |
-| C6.c | very large positive decimal integer for a negative integer | a decimal literal that wraps on conversion to a signed type |
-| C7.a | while loop as non-canonical for loop | a `for` not in OpenMP canonical form |
-| C7.d | deconstructed ternary | an `if`/`else` whose arms each only assign one variable |
-| C10.a | bitwise operators replaced with decompiler-specific macro | uses of a known set of such macros |
-| C11 | abuse of memory layout | a store through a pointer cast to a type wider than its object |
-| C12.a | return value for void function | a function whose every call discards its result |
+| pointer dereference or arithmetic to access an array member | `*(p + i)` and `*p` over an array object instead of `p[i]` | C1.b.i, C1.b.ii |
+| pointer arithmetic to access a struct member | a dereference of a cast of pointer arithmetic, `*(T *)(p + k)` | C1.a.i |
+| extra arguments | parameters no path reads (`misc-unused-parameters`) | C4.a.i |
+| very large positive decimal integer for a negative integer | a decimal literal that wraps on conversion to a signed type | C6.c |
+| while loop as non-canonical for loop | a `for` not in OpenMP canonical form | C7.a |
+| deconstructed ternary | an `if`/`else` whose arms each only assign one variable | C7.d |
+| bitwise operators replaced with decompiler-specific macros | uses of a known set of such macros | C10.a |
+| abuse of memory layout | a store through a pointer cast to a type wider than its object | C11 |
+| return value for a void function | a function whose every call discards its result | C12.a |
 
-Not checkable without the original source: C0 beyond generic names, C2.b, C3.b, C4, C4.a.ii, C4.a.iii, C4.b,
-C4.c, C5.a beyond single-use temporaries, C5.b, C6.a, C6.b, C6.d, C8 and C9 beyond memory blocks and raw addresses,
-C12.b, C13, C14.
+The codebook's other issues need the original source to tell: names that are wrong rather
+than meaningless, missing code, typecasts and variables, wrong arguments, extraneous
+variables beyond single-use temporaries, literals in the wrong representation, and global
+variables and expanded symbols beyond memory blocks and raw addresses.
 
 ## Dataflow
 
