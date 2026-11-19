@@ -13,12 +13,21 @@ from pycparser import c_ast
 
 from . import query as q
 from .front import Opaque
+from . import ints
 
 #: Declarations of variables a function owns, when automatic and never addressed.
 OWNED = ("VarDecl", "ParmVarDecl")
 #: Operators whose right operand runs on some evaluations only.
 SHORT = ("&&", "||")
 NOTHING = frozenset()
+#: Locations beyond named variables: memory through a pointer, devices (volatile accesses).
+MEMORY, DEVICE = "memory", "device"
+DEVICES = frozenset((DEVICE,))
+#: Operators whose operand is not evaluated.
+UNEVALUATED = ("sizeof", "_Alignof")
+EVERYTHING = frozenset((MEMORY, DEVICE))
+#: Why a definition's variable exists, in the order a definition takes the first that holds.
+REASONS = ("unused", "check-only", "clobbered", "merged", "multi-use", "single-use")
 
 
 class CFG:
@@ -220,6 +229,95 @@ def bits(x):
         x ^= low
 
 
+def _type(unit, n):
+    info = unit.sema.get(n)
+    return info.type if info is not None else None
+
+
+def root(unit, lv):
+    """``{id}`` of the variable whose object lvalue ``lv`` lies in (through an array's
+    subscripts and ``.`` members), None when it may lie anywhere (through a pointer)."""
+    while not isinstance(lv, c_ast.ID):
+        if isinstance(lv, c_ast.ArrayRef) and "[" in getattr(_type(unit, lv.name), "canon", ""):
+            lv = lv.name
+        elif isinstance(lv, c_ast.StructRef) and lv.type == ".":
+            lv = lv.name
+        elif isinstance(lv, c_ast.Cast):
+            lv = lv.expr
+        else:
+            return None
+    info = unit.sema.get(lv)
+    return {info.ref} if info is not None and info.ref else None
+
+
+def place(unit, lv):
+    """The locations an access to lvalue ``lv`` touches: :data:`DEVICE` when it is volatile,
+    none in an object declared ``const``, else the element ``(id, index)`` of an array
+    variable a constant subscripts, the variable it lies in, or :data:`MEMORY`."""
+    typ, at = _type(unit, lv), root(unit, lv)
+    quals = unit.qualifiers(typ) if typ is not None else ()
+    if "volatile" in quals:
+        return DEVICES
+    if at is None:
+        return frozenset((MEMORY,))
+    if "const" in quals:
+        return NOTHING
+    if isinstance(lv, c_ast.ArrayRef) and isinstance(lv.name, c_ast.ID):
+        got = {v and v[0] for v in (ints.value(lv.subscript, {}, b) for b in ints.MODELS)}
+        if len(got) == 1 and None not in got:
+            return frozenset(((*at, got.pop()),))
+    return frozenset(at)
+
+
+def _accessed(unit, n):
+    """Whether evaluating ``n`` reads the object it designates: a variable not an array, a
+    subscript, a member, a dereference."""
+    if isinstance(n, c_ast.ID):
+        sym = unit.symbol(n)
+        return sym is not None and sym.kind in OWNED and "[" not in sym.type.canon
+    return isinstance(n, (c_ast.ArrayRef, c_ast.StructRef)) or (
+        isinstance(n, c_ast.UnaryOp) and n.op == "*"
+    )
+
+
+def footprint(unit, n, calls, skip=NOTHING):
+    """``(reads, writes)``: the locations evaluating ``n`` may read and write (variables'
+    symbol ids, :data:`MEMORY`, :data:`DEVICE`, which a volatile access both reads and
+    writes); ``calls(call)`` a call's own; the nodes ``skip`` holds (by ``id``) none of
+    their own."""
+    nodes, todo = [], [n]
+    while todo:
+        x = todo.pop()
+        nodes.append(x)
+        if not (isinstance(x, c_ast.UnaryOp) and x.op in UNEVALUATED):
+            todo += [k for k in q.kids(x) if not isinstance(k, q.TYPES)]
+    unread = {id(x.lvalue) for x in nodes if isinstance(x, c_ast.Assignment) and x.op == "="}
+    unread |= {id(x.expr) for x in nodes if isinstance(x, c_ast.UnaryOp) and x.op == "&"}
+    reads, writes = set(), set()
+    for x in nodes:
+        if id(x) in skip:
+            continue
+        lhs = q.stored(x)
+        if isinstance(x, c_ast.FuncCall):
+            r, w = calls(x)
+        elif isinstance(x, Opaque):
+            r = w = EVERYTHING
+        elif lhs is not None:
+            w = place(unit, lhs)
+            r = w & DEVICES if isinstance(x, c_ast.Assignment) and x.op == "=" else w
+        elif isinstance(x, c_ast.Decl) and x.name:
+            info = unit.sema.get(x)
+            r, w = NOTHING, frozenset((info.ref,)) if info is not None and info.ref else NOTHING
+        elif id(x) not in unread and _accessed(unit, x):
+            r = place(unit, x)
+            w = r & DEVICES
+        else:
+            continue
+        reads |= r
+        writes |= w
+    return frozenset(reads), frozenset(writes)
+
+
 class Def(NamedTuple):
     """A definition of an owned variable: its vertex, the variable's symbol id, the node (None
     for a parameter on entry), whether it surely stores, and for a copy what it copies
@@ -248,11 +346,14 @@ class Flow:  # pylint: disable=too-many-instance-attributes
     """The dataflow of function ``fd`` of ``unit`` over its owned variables: automatic, neither
     array nor volatile, never addressed by ``&`` or inline assembly. ``effect(call)``: whether
     a call may write memory (default every call); ``copyable(symbol, rhs)``: whether
-    ``symbol = rhs`` copies ``rhs`` unchanged (default a variable of the same type)."""
+    ``symbol = rhs`` copies ``rhs`` unchanged (default a variable of the same type);
+    ``calls(call)``: the locations a call may read and write, as :func:`footprint`'s
+    (default everything)."""
 
-    def __init__(self, unit, fd, effect=None, copyable=None):
+    def __init__(self, unit, fd, effect=None, copyable=None, calls=None):
         self.unit, self.fd = unit, fd
         self.effect = effect or (lambda call: True)
+        self.calls = calls or (lambda call: (EVERYTHING, EVERYTHING))
         self.copyable = copyable or self._same_type
         self.own = self._owned(unit.sema[fd].ref)
         self.cfg = build(fd.body, lambda call: getattr(unit.symbol(call), "noreturn", False))
@@ -273,7 +374,7 @@ class Flow:  # pylint: disable=too-many-instance-attributes
         unit, banned = self.unit, set()
         for n in q.walk(self.fd):
             if isinstance(n, c_ast.UnaryOp) and n.op == "&":
-                banned.update(self._root(n.expr) or ())
+                banned.update(root(self.unit, n.expr) or ())
             elif isinstance(n, Opaque):
                 banned.update(unit.sema[x].ref for x in q.walk(n) if x in unit.sema)
         return frozenset(
@@ -286,25 +387,6 @@ class Flow:  # pylint: disable=too-many-instance-attributes
             and "[" not in sym.type.canon
             and "volatile" not in unit.qualifiers(sym.type)
         )
-
-    def _root(self, lv):
-        """``{id}`` of the variable whose object lvalue ``lv`` lies in (through an array's
-        subscripts and ``.`` members), None when it may lie anywhere (through a pointer)."""
-        while not isinstance(lv, c_ast.ID):
-            if isinstance(lv, c_ast.ArrayRef) and "[" in self._type(lv.name):
-                lv = lv.name
-            elif isinstance(lv, c_ast.StructRef) and lv.type == ".":
-                lv = lv.name
-            elif isinstance(lv, c_ast.Cast):
-                lv = lv.expr
-            else:
-                return None
-        ref = self._ref(lv)
-        return {ref} if ref else None
-
-    def _type(self, n):
-        info = self.unit.sema.get(n)
-        return info.type.canon if info is not None and info.type is not None else ""
 
     def _ref(self, n):
         info = self.unit.sema.get(n)
@@ -323,7 +405,7 @@ class Flow:  # pylint: disable=too-many-instance-attributes
             out.append((self._ref(n), n, not maybe))
         lhs = q.stored(n)
         if lhs is not None:
-            for r in self._root(lhs) or (None,):
+            for r in root(self.unit, lhs) or (None,):
                 out.append((r, n, not maybe and isinstance(lhs, c_ast.ID)))
         if isinstance(n, c_ast.BinaryOp) and n.op in SHORT:
             parts = ((n.left, maybe), (n.right, True))
@@ -337,16 +419,22 @@ class Flow:  # pylint: disable=too-many-instance-attributes
 
     def _reads(self, n):
         """Owned variables node ``n`` reads (an assignment's target is not read)."""
+        return frozenset(self._occurrences(n))
+
+    def _occurrences(self, n):
+        """``{id: [ID node]}`` of each owned variable node ``n`` reads, where it reads it."""
+        if n is None:
+            return {}
         skip = {
             id(x.lvalue)
             for x in q.walk(n)
             if isinstance(x, c_ast.Assignment) and x.op == "=" and isinstance(x.lvalue, c_ast.ID)
         }
-        return frozenset(
-            r
-            for x in q.walk(n, q.TYPES)
-            if isinstance(x, c_ast.ID) and id(x) not in skip and (r := self._ref(x)) in self.own
-        )
+        out = {}
+        for x in q.walk(n, q.TYPES):
+            if isinstance(x, c_ast.ID) and id(x) not in skip and (r := self._ref(x)) in self.own:
+                out.setdefault(r, []).append(x)
+        return out
 
     @staticmethod
     def _evaluated(n):
@@ -498,6 +586,150 @@ class Flow:  # pylint: disable=too-many-instance-attributes
                 if len(ds) > 1
             ]
         return found
+
+    def temporaries(self):
+        """``[(def, reason)]`` of each assignment or initialisation of an owned variable, by
+        the first of :data:`REASONS` that holds (docs/census.md): no use reached;
+        every use the condition of an ``if`` a branch of which ends in a call never returning;
+        something between it and a use may change what its value reads; another
+        definition reaches a use too; more than one use; else one use."""
+        rd = self.reaching()
+        users, merged = [[] for _ in self.defs], set()
+        for x in self.cfg.order:
+            for v, ids in self._occurrences(self._evaluated(self.cfg.nodes[x])).items():
+                reach = rd[x] & self.mask.get(v, 0)
+                for i in bits(reach):
+                    users[i].append((x, ids))
+                    if reach != 1 << i:
+                        merged.add(i)
+        bit = _Locations(self.own)
+        value = [bit.mask(*self._value(d)) if _assigns(d) else (0, 0) for d in self.defs]
+        dirty, checks = self._dirty(rd, value, bit), self._checks()
+
+        def reason(i):
+            got = users[i]
+            if not got:
+                return "unused"
+            if all(x in checks for x, _ in got):
+                return "check-only"
+            if any(
+                dirty[x] >> i & 1 or any(self._clash(x, u, value[i], bit) for u in ids)
+                for x, ids in got
+            ):
+                return "clobbered"
+            if i in merged:
+                return "merged"
+            return "multi-use" if sum(len(ids) for _, ids in got) > 1 else "single-use"
+
+        return [(d, reason(i)) for i, d in enumerate(self.defs) if _assigns(d)]
+
+    def _value(self, d):
+        """``(reads, writes)`` of definition ``d``'s value, its own store aside."""
+        n = d.node
+        if isinstance(n, c_ast.Decl):
+            n = n.init
+        elif isinstance(n, c_ast.Assignment) and n.op == "=":
+            n = n.rvalue
+        r, w = footprint(self.unit, n, self.calls)
+        return r, w - {d.var}
+
+    def _dirty(self, rd, value, bit):
+        """Each vertex's definitions (bits over :attr:`defs`) reaching it along a path from
+        which something may change what their values read."""
+        n, cfg = len(self.cfg.nodes), self.cfg
+        gen, kill = [0] * n, [0] * n
+        for i, d in enumerate(self.defs):
+            if d.must:
+                kill[d.vertex] |= self.mask[d.var]
+            if value[i][0] >> bit.index(d.var) & 1:
+                gen[d.vertex] |= 1 << i
+        for x in cfg.order:
+            node = self._evaluated(cfg.nodes[x])
+            if node is None:
+                continue
+            r, w = bit.mask(*footprint(self.unit, node, self.calls))
+            for i in bits(rd[x] & ~kill[x]):
+                if bit.conflict(value[i], (r, w)):
+                    gen[x] |= 1 << i
+        return solve(cfg, gen, [k & ~g for k, g in zip(kill, gen)])[0]
+
+    def _clash(self, x, use, value, bit):
+        """Whether vertex ``x`` may change what ``value`` reads before it reads ``use`` (an
+        ``ID``), or reads what it writes: ``use``'s ancestors act after it."""
+        node = self._evaluated(self.cfg.nodes[x])
+        path = _ancestors(node, use)
+        return bit.conflict(value, bit.mask(*footprint(self.unit, node, self.calls, path)))
+
+    def _checks(self):
+        """The condition vertices of ``if`` statements a branch of which surely ends in a
+        call that never returns: every path from it reaches a vertex without successors."""
+        cfg = self.cfg
+        conds = {id(n.cond) for n in q.walk(self.fd.body) if isinstance(n, c_ast.If)}
+        dead, more = set(), True
+        while more:
+            more = False
+            for x in reversed(cfg.order):
+                if x not in dead and x != cfg.exit and all(s in dead for s in cfg.succ[x]):
+                    dead.add(x)
+                    more = True
+        return {
+            x
+            for x in cfg.order
+            if id(cfg.nodes[x]) in conds and any(s in dead for s in cfg.succ[x])
+        }
+
+
+class _Locations:
+    """Bits for locations, each overlapping those of :attr:`cover`: :data:`MEMORY` every
+    variable not owned and element, an array variable its elements."""
+
+    def __init__(self, own):
+        self.own, self.bit, self.cover = own, {MEMORY: 0}, [0]
+
+    def index(self, loc):
+        """The bit of location ``loc``."""
+        if loc not in self.bit:
+            b = self.bit[loc] = len(self.bit)
+            self.cover.append(0)
+            if loc not in self.own and loc != DEVICE:
+                self.cover[0] |= 1 << b
+                self.cover[b] |= 1
+            if isinstance(loc, tuple):
+                whole = self.index(loc[0])
+                self.cover[whole] |= 1 << b
+                self.cover[b] |= 1 << whole
+        return self.bit[loc]
+
+    def mask(self, *sets):
+        """Each set of locations as a mask."""
+        return tuple(sum(1 << self.index(loc) for loc in locs) for locs in sets)
+
+    def overlap(self, a, b):
+        """Whether location masks ``a`` and ``b`` may name one location."""
+        for i in bits(a):
+            a |= self.cover[i]
+        return bool(a & b)
+
+    def conflict(self, a, b):
+        """Whether evaluations of footprints ``a`` and ``b`` (``(reads, writes)`` masks) may
+        not be reordered: one writes what the other reads or writes."""
+        return self.overlap(a[0], b[1]) or self.overlap(a[1], b[0] | b[1])
+
+
+def _assigns(d):
+    """Whether definition ``d`` assigns a value: not a parameter's, nor a bare declaration."""
+    return d.node is not None and not (isinstance(d.node, c_ast.Decl) and d.node.init is None)
+
+
+def _ancestors(n, target):
+    """``id`` of each node from ``n`` down to ``target``, ``target`` included."""
+    todo = [(n, (id(n),))]
+    while todo:
+        x, path = todo.pop()
+        if x is target:
+            return frozenset(path)
+        todo += [(k, (*path, id(k))) for k in q.kids(x)]
+    return NOTHING
 
 
 def _params(fd):

@@ -46,6 +46,7 @@ def main(argv=None):
                 "lines": rep.lines,
                 "statements": rep.statements,
                 "names": dict(zip(("opaque", "declared"), rep.names)),
+                "reasons": rep.reasons,
             }
             for path, rep in reports.items()
         }
