@@ -66,11 +66,12 @@ def _attrs(n):
     return tuple(out)
 
 
-def key(n, unit=None, by_name=False):
+def key(n, unit=None, by_name=False, converted=True):
     """``n``'s structure, equal exactly when the trees are. Given ``unit``: a name by the
     identity of its declaration (``by_name``: by its name and whether it is at file scope),
     a declaration by its name and canonical type, and an expression by its canonical type
-    and implicit casts too."""
+    and implicit casts too (``converted`` False: not those its context applies to ``n``
+    itself, so ``i`` keys alike as an index and as an operand promoted to ``int``)."""
     if n is None:
         return None
     if unit is None:
@@ -81,7 +82,8 @@ def key(n, unit=None, by_name=False):
         sym = unit.symbols.get(info.ref)
         extra = (n.name, sym.function is None if by_name else info.ref)
     if info is not None and info.type is not None:
-        extra += (info.type.canon, tuple((c.kind, c.type.canon) for c in info.casts))
+        extra += (info.type.canon,)
+        extra += (tuple((c.kind, c.type.canon) for c in info.casts),) if converted else ()
     sub = tuple(key(c, unit, by_name) for c in kids(n) if not isinstance(c, TYPES))
     if isinstance(n, (c_ast.Cast, c_ast.Typename)) or (
         isinstance(n, c_ast.UnaryOp) and isinstance(n.expr, c_ast.Typename)
