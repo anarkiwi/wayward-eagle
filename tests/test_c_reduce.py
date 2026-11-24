@@ -2,7 +2,7 @@
 
 from pycparser import c_ast
 
-from conftest import LOCAL, deep
+from conftest import LOCAL, behaves, deep
 from wayward_eagle.c import listflow as flow, front, printer as render, stmt
 from wayward_eagle.c import reduce as r
 
@@ -385,3 +385,29 @@ def walk_all(n):
     yield n
     for _, c in n.children():
         yield from walk_all(c)
+
+
+def test_a_status_piece_calls_its_join(cc, tmp_path):
+    """A block leaving early by a return, its site in an ``if`` arm, calls what follows the
+    site instead of returning whether to go on: it returns nothing, its site is the call and
+    a return, and the join's live variable is a parameter; the reduced C does what the
+    original does. One in a loop, or whose join holds code its caller keeps for another
+    path, stays a status."""
+    fn = r.Function([], LOCAL, True)
+    body = "v1 = p; if (q) { if (p) { " + deep(6, "x(); return;") + " } } w(v1);"
+    pieces, _ = r.extracted("f", [], cc.items(body), fn)
+    got = r.joined(pieces, fn)
+    assert pieces[1].ret == "status" and got[1].ret is None
+    assert got[1].args == ["v1"] and "w(v1); return;" in cc.text(got[1].items)
+    assert "return 1;" not in cc.text(got[1].items)
+    assert "f_x1(v1); return;" in cc.text(got[0].items)
+    src = (
+        "void f(void) { int v1 = p; if (q) { if (p) { " + deep(6, "x(); return;") + " } } w(v1); }"
+    )
+    behaves(tmp_path, src)
+    looped = cc.items("for (;;) { if (p) { " + deep(6, "x(); return;") + " } y(); }")
+    kept, _ = r.extracted("f", [], looped, fn)
+    assert r.joined(kept, fn)[1].ret == "status"
+    code = cc.items(body.replace("w(v1);", "v1 = v1 + 1; w(v1);"))
+    kept, _ = r.extracted("f", [], code, fn)
+    assert r.joined(kept, fn)[1].ret == "status"

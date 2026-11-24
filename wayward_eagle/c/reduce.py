@@ -13,6 +13,7 @@ from pycparser import c_ast
 from . import query as q
 from .listflow import Graph, propagated, reachable, unstored
 from .refine import Rotation, refined, trimmed
+from .sink import sunk
 from .stmt import (
     LABELS,
     arms,
@@ -27,6 +28,7 @@ from .stmt import (
     iff,
     is_fallthrough,
     is_goto,
+    is_site,
     labels,
     names_in,
     negate,
@@ -711,6 +713,7 @@ def reduce_function(  # pylint: disable=too-many-locals
     taken = frozenset(taken) | {n.name for n in q.walk(fd.body) if isinstance(n, c_ast.ID)}
     fn = Function(names, set(types) - set(names), _returns_void(fd), stops, taken)
     pieces, secs, temps = reduced(body, name, fn)
+    pieces = joined(pieces, fn._replace(params=names))
     types.update({t: copy.deepcopy(status) for t in temps})
     pieces = [p._replace(items=finished(p.items, p.ret is None, types, stops)) for p in pieces]
     if len(secs) > 1:
@@ -730,10 +733,11 @@ def reduce_function(  # pylint: disable=too-many-locals
 def finished(items, void, types, stops=None):
     """Statements ``items`` of a function (returning nothing when ``void``) refined
     (:func:`~wayward_eagle.c.refine.refined`, rotated), copies propagated, dead stores and
-    unreached statements dropped, and trailing jumps trimmed."""
+    unreached statements dropped, trailing jumps trimmed and forward gotos left sunk
+    (:func:`~wayward_eagle.c.sink.sunk`)."""
     local = set(types)
     items = reachable(Rotation(types, stops)(refined(items, local)), stops)
-    return trimmed(unstored(propagated(items, types, stops), local, stops), void)
+    return sunk(trimmed(unstored(propagated(items, types, stops), local, stops), void))
 
 
 def _exprs(items, f):
@@ -745,6 +749,125 @@ def _exprs(items, f):
         return reheaded(st, new) if any(a is not b for a, b in zip(new, exprs)) else st
 
     return remap(items, fix)
+
+
+def _status_site(st, name):
+    """Whether ``st`` is ``if (name(...)) { return; }``, the test of a status piece."""
+    if not isinstance(st, c_ast.If) or block(st.iffalse):
+        return False
+    then = block(st.iftrue)
+    return (
+        isinstance(st.cond, c_ast.FuncCall)
+        and q.callee(st.cond) == name
+        and len(then) == 1
+        and isinstance(then[0], c_ast.Return)
+        and then[0].expr is None
+    )
+
+
+def _frames(items, name):
+    """``[(list, index)]`` from ``items`` in to the status site of ``name`` through ``if``
+    arms alone, or None (none, or one inside a loop or ``switch``)."""
+    for i, st in enumerate(items):
+        if _status_site(st, name):
+            return [(items, i)]
+        if isinstance(st, c_ast.If):
+            for sub in (block(st.iftrue), block(st.iffalse)):
+                got = _frames(sub, name)
+                if got is not None:
+                    return [(items, i), *got]
+    return None
+
+
+def _continuation(frames):
+    """What runs after the innermost frame's statement to the function's end: the rest of
+    each list outwards, up to one ending in a jump."""
+    out = []
+    for items, i in reversed(frames):
+        out += items[i + 1 :]
+        if ends_in_jump(out):
+            break
+    return out
+
+
+def _code(st):
+    """The status ``return n;`` returns, or None for another statement."""
+    if isinstance(st, c_ast.Return) and isinstance(st.expr, c_ast.Constant):
+        return int(st.expr.value)
+    return None
+
+
+def _sole_site(pieces, x):
+    """``(piece index, frames)`` of status piece ``x``'s one call, its status site reached
+    through ``if`` arms (:func:`_frames`), where its returns are 0 and 1 alone; else None."""
+    sites = [(j, _frames(p.items, x.name)) for j, p in enumerate(pieces)]
+    sites = [(j, f) for j, f in sites if f is not None]
+    calls = sum(
+        isinstance(n, c_ast.FuncCall) and q.callee(n) == x.name
+        for p in pieces
+        for st in p.items
+        for n in q.walk(st)
+    )
+    codes = {_code(n) for st in x.items for n in q.walk(st) if isinstance(n, c_ast.Return)}
+    return sites[0] if len(sites) == 1 and calls == 1 and not codes - {0, 1} else None
+
+
+def joined(pieces, fn):
+    """``pieces`` with each status piece returning only "go on" (0) or "return" (1), tested
+    by one site its caller (returning nothing) reaches through ``if`` arms, calling the code
+    at the join instead (:func:`_join`), until none is left so."""
+    pieces = list(pieces)
+    while True:
+        for k, x in enumerate(pieces):
+            got = _join(pieces, k, fn) if x.ret == STATUS and fn.void else None
+            if got is not None:
+                pieces = got
+                break
+        else:
+            return pieces
+
+
+def _rejoined(items, join):
+    """Status piece body ``items`` with ``join`` and a return for each ``return 0``, a return
+    for each ``return 1``."""
+
+    def rejoin(st):
+        code = _code(st)
+        if code is None:
+            return [st]
+        return [returning()] if code else [*copy.deepcopy(join), returning()]
+
+    return _splice(items, rejoin)
+
+
+def _moved(items, join, inner):
+    """Whether status piece body ``items`` running ``join`` (its first ``inner`` statements
+    the site's own list's, the rest kept by its caller for other paths) at each ``return 0``
+    puts no statement of code (not :func:`~wayward_eagle.c.stmt.is_site`) in two places."""
+    goes = sum(_code(n) == 0 for st in items for n in q.walk(st))
+    return not goes or all(map(is_site, join if goes > 1 else join[inner:]))
+
+
+def _join(pieces, k, fn):
+    """``pieces`` with status piece ``k`` calling the code at its join: what follows its site
+    to its caller's end runs in place of each ``return 0``, it returns nothing and its site is
+    the call and a return, the join's live variables its parameters; None where it cannot."""
+    x, site = pieces[k], _sole_site(pieces, pieces[k])
+    if site is None or pieces[site[0]].ret is not None:
+        return None
+    j, frames = site
+    caller, join = pieces[j], _continuation(frames)
+    lst, i = frames[-1]
+    if not _moved(x.items, join, len(lst) - i - 1):
+        return None
+    live = Graph(join, fn.noreturn).live_in() & (fn.local | set(fn.params) | set(caller.args))
+    args = [*x.args, *sorted(live - set(x.args), key=order)]
+
+    out = list(pieces)
+    out[k] = Piece(x.name, args, _rejoined(x.items, join), None)
+    new = [*lst[:i], call(x.name, args), returning(), *lst[i + 1 :]]
+    out[j] = caller._replace(items=swap(caller.items, lst, new))
+    return out
 
 
 def pruned(pieces, top):
