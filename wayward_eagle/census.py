@@ -969,7 +969,8 @@ def adapter(options):  # pylint: disable=too-many-locals
     (a file's number of local variables key), ``reasons`` (template also over ``reason``:
     a file's definitions of local variables of each of :data:`REASONS`), ``lines`` and
     ``statements`` (the most lines and statements of a function of the file keys); empty
-    for none."""
+    for none; ``combine`` (each name's weights of classes: one key, ``class`` the name, of
+    the weighted sum of their sites, in place of theirs)."""
     files = sorted({p for g in options["files"] for p in glob.glob(g, recursive=True)})
     if not files:
         raise ValueError(f"no files match {options['files']}")
@@ -978,15 +979,15 @@ def adapter(options):  # pylint: disable=too-many-locals
     local = options.get("locals", "{stem}:locals")
     reasons = options.get("reasons", "{stem}:locals:{reason}")
     largest = {m: options.get(m, f"{{stem}}:{m}") for m in ("lines", "statements")}
+    into = {k: (n, w) for n, ws in options.get("combine", {}).items() for k, w in ws.items()}
     out = Counter()
     for path, rep in census_all(files, options.get("include", ())).items():
         names = {"stem": pathlib.Path(path).stem, "path": path}
-        if "{function}" not in template:
-            for cls in CLASSES[1:]:
-                out[template.format(function="", **names, **{"class": cls})] += 0
-        for s in rep.sites:
-            if s.cls != COGNITIVE:
-                out[template.format(function=s.function, **names, **{"class": s.cls})] += 1
+        held = [(k, "", 0) for k in ("{function}" not in template) * CLASSES[1:]]
+        for cls, fn, n in held + [(s.cls, s.function, 1) for s in rep.sites]:
+            if cls != COGNITIVE:
+                cls, w = into.get(cls, (cls, 1))
+                out[template.format(function=fn, **names, **{"class": cls})] += n * w
         out[total.format(**names)] += sum(rep.complexity.values())
         if local:
             out[local.format(**names)] += sum(rep.locals.values())

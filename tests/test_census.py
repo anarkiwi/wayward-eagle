@@ -596,6 +596,24 @@ def test_adapter_keys(tmp_path):
         cen.adapter({"files": [str(tmp_path / "none-*.c")]})
 
 
+def test_adapter_combine(tmp_path):
+    """``combine`` replaces its classes' keys by one of their weighted site counts, per file
+    and per function, every other key unchanged."""
+    path = tmp_path / "t.c"
+    path.write_text(
+        HEAD + "uint8_t m[64];\nvoid f(int v1) { m[0x10 + v1] = 1; m[0x20 + v1] = 2; }\n",
+        encoding="utf-8",
+    )
+    weights = {"opacity": {"opaque-name": 1, "raw-memory": 2}}
+    plain = cen.adapter({"files": [str(path)]})
+    got = cen.adapter({"files": [str(path)], "combine": weights})
+    assert plain["t:opaque-name"] == 1 and plain["t:raw-memory"] == 2
+    assert got.pop("t:opacity") == 5
+    assert got == {k: v for k, v in plain.items() if k not in ("t:opaque-name", "t:raw-memory")}
+    by_fn = cen.adapter({"files": [str(path)], "key": "{class}/{function}", "combine": weights})
+    assert by_fn["opacity/f"] == 5 and not {"opaque-name/f", "raw-memory/f"} & set(by_fn)
+
+
 VC = shutil.which("virtuous-cycles", path=os.path.dirname(sys.executable))
 
 
