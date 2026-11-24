@@ -76,6 +76,10 @@ MEMORY = "uint8_t m[64];\nuint8_t t[4];\n"
         ("void f(int i) { uint8_t l[64]; l[i] = 1; l[0x20 + i] = 2; g = l[1]; }", 0),
         ("void f(int i) { W[i] = 1; m[0x10 + i] = 2; t[i] = 3; t[i + 1] = 4; }", 2),
         ("void f(int i) { (m + i)[2] = 1; (m + 0x20)[i] = 2; }", 2),
+        ("void f(uint8_t i) { g = m[i] + m[i + 1] + m[i - 1] + m[(uint16_t)(i - 1)]; }", 0),
+        ("void f(uint8_t i, uint8_t j) { g = m[i + 1] + m[i] + m[j + 1]; }", 0),
+        ("void f(uint8_t i, uint8_t j) { g = m[i] + m[i - 1] + m[j]; }", 0),
+        ("void f(uint8_t i) { g = m[i] + m[i + 3] + m[(uint16_t)(i + 3)]; }", 3),
     ],
 )
 def test_raw_memory(tmp_path, body, n):

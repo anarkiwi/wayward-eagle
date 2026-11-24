@@ -200,7 +200,9 @@ def raw_memory(unit):
             i, sym = arrays[0]
             index = frozenset(
                 Counter(
-                    (sign, q.key(t, unit)) for j, (sign, t) in enumerate(s.terms) if j != i
+                    (sign, q.key(t, unit, converted=False))
+                    for j, (sign, t) in enumerate(s.terms)
+                    if j != i
                 ).items()
             )
             uses.setdefault(sym.id, (sym, []))[1].append((f, n, index, s.constant))
