@@ -376,6 +376,7 @@ statements = "{stem}:statements"
 | `locals` | `{stem}:locals` | template over `stem` and `path`; the value is the file's total of automatic local variables (`locals` of `--json`); empty for no key |
 | `reasons` | `{stem}:locals:{reason}` | template over `stem`, `path` and `reason`; the value is the file's definitions of automatic variables of that [reason](#locals-by-reason), every reason a key; empty for none |
 | `lines`, `statements` | `{stem}:lines`, `{stem}:statements` | templates over `stem` and `path`; the value is the most lines, or statements, of a function of the file; empty for no key |
+| `combine` | `{}` | `{name = {class = weight, ...}}`; each name is a key of `key` with `class` the name, its value the weighted sum of those classes' site counts, which have no keys of their own |
 
 Without `{function}` in `key`, every class of every file is a key, at zero when it has no
 site, so a class returning to a file is worse than its budget. `cognitive-complexity`
