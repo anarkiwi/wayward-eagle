@@ -117,6 +117,20 @@ reachability):
 - a `return;` ending a function returning nothing, or ending each arm of an `if` ending it,
   goes, as does a `continue;` ending a loop body or the arms of an `if` ending it; an `if`
   left with no arms and a condition of variables and constants goes;
+- *joins called* (`joined`): a status piece returning only "go on" (0) or "return" (1),
+  tested by one site its caller (returning nothing) reaches through `if` arms, runs what
+  follows the site to its caller's end in place of each `return 0` and returns nothing; its
+  site is the call and a return, and the join's live variables become its parameters, until
+  no piece is left so; a join holding code (a statement other than a jump, a return of a
+  variable or constant, or a call of variables and constants) that would then be in two
+  places (two `return 0`, or code after the site's own list its caller keeps for other
+  paths) leaves the piece a status;
+- *sunk tails* (`wayward_eagle.c.sink`): a label every `goto` to which lies in the statements
+  before it in its own list goes, the statements between the first of them and the label
+  put on each path falling to it (an `if` not taken, an arm's end, before a `break` of a
+  `switch` the `goto` breaks out of), each `goto` leaving, where that keeps or lowers the
+  cost; a `goto` inside a loop, a label also reached from after it, or a tail holding code
+  that would go on two paths (no statement of code is copied), stays;
 - a parameter of a `static` piece it never mentions goes, with its argument in each call of
   the piece, until none is left; a parameter of the original function it never reads is
   `(void)p;`.

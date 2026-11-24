@@ -344,6 +344,21 @@ def call(name, args):
     )
 
 
+def is_site(st):
+    """Whether ``st`` holds no code of its own to copy: a ``break``, ``continue``, fall into
+    the next case, ``return`` of nothing, a variable or a constant, or a call of variables
+    and constants (its value possibly put in a variable), as a shared tail's call is."""
+    if isinstance(st, c_ast.Assignment) and st.op == "=" and isinstance(st.lvalue, c_ast.ID):
+        st = st.rvalue
+    if isinstance(st, c_ast.Return):
+        return st.expr is None or isinstance(st.expr, (c_ast.ID, c_ast.Constant))
+    if isinstance(st, c_ast.FuncCall):
+        return isinstance(st.name, c_ast.ID) and all(
+            isinstance(a, (c_ast.ID, c_ast.Constant)) for a in q.arguments(st)
+        )
+    return isinstance(st, (c_ast.Break, c_ast.Continue)) or is_fallthrough(st)
+
+
 def returning(value=None):
     """``return value;`` (``value`` an expression, an int, a variable's name, or None)."""
     if isinstance(value, int):
