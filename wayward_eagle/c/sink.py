@@ -35,7 +35,9 @@ def _placed(tail, placed):
     return copy.deepcopy(tail)
 
 
-def _sunk(items, tail, label, placed, *, after=None, end=True):
+def _sunk(
+    items, tail, label, placed, *, after=None, end=True
+):  # pylint: disable=too-many-arguments
     """``items`` then ``tail``, each ``goto label`` in ``items`` leaving past ``tail``: a copy
     of ``tail`` (:func:`_placed`) on each path falling off their end (none for an arm
     falling into the next, ``end`` false). In a ``switch`` arm (``after`` what follows the
