@@ -493,6 +493,15 @@ def test_duplicate_sequences_are_maximal(tmp_path):
     assert sorted(s.detail.split(" at ")[0] for s in got) == ["2 statements", "3 statements"]
 
 
+def test_duplicate_code_leaves_tail_calls(tmp_path):
+    """A call and a ``return;`` repeated is the call of shared code, no duplicate; a call
+    and another statement repeated is."""
+    body = "void f(int c) { if (c) { tick(); return; } if (g) { tick(); return; } tick(); }"
+    assert not sites(tmp_path, body, (), "duplicate-code")
+    body = "void f(int c) { if (c) { tick(); g = 1; } if (g) { tick(); g = 1; } }"
+    assert len(sites(tmp_path, body, (), "duplicate-code")) == 1
+
+
 def test_duplicate_code_ignores_names_of_its_own_locals(tmp_path):
     """Blocks declaring and using their own variables alike are duplicates."""
     body = "void f(int c) { { int t = c; g = t; } { int t = c; g = t; } }"

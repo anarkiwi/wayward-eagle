@@ -302,8 +302,9 @@ statement for statement, elsewhere in the same function: AST equality with refer
 by name and scope, so blocks declaring and using their own variables alike match, and
 literals equal by their spelling wherever it is (a header's macro included). Statements are
 clang's: one declaration statement, or a chain of `case` labels with its first statement, is
-one. One site
-per distinct sequence, its detail its length and the lines of every copy.
+one. A call and a `return;` alone is no sequence: it calls code its callers share
+instead of copying it. One site per distinct sequence, its detail its length and the lines of
+every copy.
 
 ## Issues not covered
 

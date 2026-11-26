@@ -63,6 +63,19 @@ AST = (
 ATTRIBUTED = {"ConstAttr": (NOTHING, NOTHING), "PureAttr": (frozenset((MEMORY,)), NOTHING)}
 #: The fewest statements a repeated sequence holds.
 SEQUENCE = 2
+
+
+def _tail_call(sts):
+    """Whether ``sts`` is one call and a ``return;``: the call of code shared by its callers,
+    not a copy of it."""
+    return (
+        len(sts) == 2
+        and isinstance(sts[0], c_ast.FuncCall)
+        and isinstance(sts[1], c_ast.Return)
+        and sts[1].expr is None
+    )
+
+
 CLASSES = (COGNITIVE, *TIDY.values(), *AST)
 CONFIG = json.dumps({"Checks": ",".join(["-*", *TIDY])})
 LABELS = (c_ast.Case, c_ast.Default)
@@ -427,7 +440,7 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             for j, (na, ia) in enumerate(spots):
                 for nb, ib in spots[j + 1 :]:
                     size = _run(lists[na][1], ia, lists[nb][1], ib, na == nb)
-                    if size >= SEQUENCE:
+                    if size >= SEQUENCE and not _tail_call(lists[na][0][ia : ia + size]):
                         seq = tuple(lists[na][1][ia : ia + size])
                         found.setdefault(seq, set()).update(((na, ia), (nb, ib)))
         for seq, spots in found.items():

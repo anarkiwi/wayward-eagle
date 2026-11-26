@@ -411,3 +411,14 @@ def test_a_status_piece_calls_its_join(cc, tmp_path):
     code = cc.items(body.replace("w(v1);", "v1 = v1 + 1; w(v1);"))
     kept, _ = r.extracted("f", [], code, fn)
     assert r.joined(kept, fn)[1].ret == "status"
+
+
+def test_an_else_after_a_jump_follows_its_if(cc):
+    """An ``if`` whose then arm ends in a jump loses its ``else``, the arm's statements after
+    it, at every depth; an ``if`` falling through keeps its ``else``."""
+    got = stmt.unelsed(cc.items("if (p) { x(); return; } else { y(); } z();"))
+    assert cc.same(got, "if (p) { x(); return; } y(); z();")
+    nested = stmt.unelsed(cc.items("if (q) { if (p) { return; } else { y(); } } w(k);"))
+    assert cc.same(nested, "if (q) { if (p) { return; } y(); } w(k);")
+    kept = cc.items("if (p) { x(); } else { y(); }")
+    assert cc.same(stmt.unelsed(kept), "if (p) { x(); } else { y(); }")

@@ -39,6 +39,7 @@ from .stmt import (
     remap,
     returning,
     swap,
+    unelsed,
     targets,
     writes,
 )
@@ -866,7 +867,7 @@ def _join(pieces, k, fn):
     out = list(pieces)
     out[k] = Piece(x.name, args, _rejoined(x.items, join), None)
     new = [*lst[:i], call(x.name, args), returning(), *lst[i + 1 :]]
-    out[j] = caller._replace(items=swap(caller.items, lst, new))
+    out[j] = caller._replace(items=unelsed(swap(caller.items, lst, new)))
     return out
 
 
