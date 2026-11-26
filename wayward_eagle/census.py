@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import functools
-import glob
 import json
 import multiprocessing
 import os
@@ -959,42 +958,3 @@ def census_all(paths, include=(), jobs=None, quiet=False):
         for fut in tqdm(done, total=len(paths), desc="census", unit="file", disable=quiet):
             out[futures[fut]] = fut.result()
     return {p: out[p] for p in paths}
-
-
-def adapter(options):  # pylint: disable=too-many-locals
-    """virtuous-cycles adapter ``wayward-census``: site counts per key (docs/census.md).
-
-    Options ``files`` (globs), ``include`` (directories), ``key`` (template over ``stem``,
-    ``path``, ``class`` and ``function``), ``total`` (a file's complexity key), ``locals``
-    (a file's number of local variables key), ``reasons`` (template also over ``reason``:
-    a file's definitions of local variables of each of :data:`REASONS`), ``lines`` and
-    ``statements`` (the most lines and statements of a function of the file keys); empty
-    for none; ``combine`` (each name's weights of classes: one key, ``class`` the name, of
-    the weighted sum of their sites, in place of theirs)."""
-    files = sorted({p for g in options["files"] for p in glob.glob(g, recursive=True)})
-    if not files:
-        raise ValueError(f"no files match {options['files']}")
-    template = options.get("key", "{stem}:{class}")
-    total = options.get("total", "{stem}:cognitive-complexity")
-    local = options.get("locals", "{stem}:locals")
-    reasons = options.get("reasons", "{stem}:locals:{reason}")
-    largest = {m: options.get(m, f"{{stem}}:{m}") for m in ("lines", "statements")}
-    into = {k: (n, w) for n, ws in options.get("combine", {}).items() for k, w in ws.items()}
-    out = Counter()
-    for path, rep in census_all(files, options.get("include", ())).items():
-        names = {"stem": pathlib.Path(path).stem, "path": path}
-        held = [(k, "", 0) for k in ("{function}" not in template) * CLASSES[1:]]
-        for cls, fn, n in held + [(s.cls, s.function, 1) for s in rep.sites]:
-            if cls != COGNITIVE:
-                cls, w = into.get(cls, (cls, 1))
-                out[template.format(function=fn, **names, **{"class": cls})] += n * w
-        out[total.format(**names)] += sum(rep.complexity.values())
-        if local:
-            out[local.format(**names)] += sum(rep.locals.values())
-        for r in REASONS if reasons else ():
-            out[reasons.format(reason=r, **names)] += sum(c[r] for c in rep.reasons.values())
-        for m, k in largest.items():
-            if k:
-                k = k.format(**names)
-                out[k] = max(out[k], *getattr(rep, m).values(), 0)
-    return dict(out)
