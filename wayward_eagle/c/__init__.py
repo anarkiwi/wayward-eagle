@@ -38,7 +38,7 @@ from .query import (
     walk,
     writes,
 )
-from .reduce import THRESHOLD, prototypes, reduce_function, reduce_unit
+from .reduce import THRESHOLD, declarators, prototypes, reduce_function, reduce_unit
 from .printer import Generator, format_c, render, text
 
 __all__ = [
@@ -61,6 +61,7 @@ __all__ = [
     "cognitive",
     "command",
     "commas",
+    "declarators",
     "dump",
     "equal",
     "format_c",
