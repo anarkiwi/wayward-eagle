@@ -134,6 +134,23 @@ reachability):
     cognitive complexity does not rise;
 
   repeated until none applies (one fold may open another, folding a chain into its end);
+- *carry chains as sums* (`wayward_eagle.c.carry`, only with `carries`), in each piece after
+  it is finished, then temporaries folded again; each over locals typed `uint8_t` that one
+  piece alone mentions and none takes, and kept only where it lowers the piece's cognitive
+  complexity, else its statements, else its nodes:
+  - a byte sum `x = a + b;` (the one store to `x`, no read before it; `a`, `b` bytes in both
+    data models, by the ranges folding uses) whose carry is recomputed, `x < a` or `x < b`
+    (`a > x`, ..; the operand a local unchanged since, or a constant), is widened:
+    `uint16_t x = a + b;` holds the exact sum, the carry reads `x > 0xFF` (an `int` 0 or 1,
+    as the comparison was), and each other read `(uint8_t)x`, uncast where its context
+    converts to a byte or casts to 8 bits or fewer;
+  - a widened `x = (uint8_t)t + c` (`c` 0 or 1) of a widened `t`, every carry of `x` in
+    `t > 0xFF || x > 0xFF` and `t` read nowhere else, becomes `x = t + c` with each such
+    `||` `x > 0xFF`, then `t`'s sum folded in where folding's order rules allow
+    (`x = a + b + c`); a chain left with a carry in an `||` stays bytes;
+  - `(uint16_t)(((uint16_t)H << 8 | L) + ((uint16_t)T << 8 | C)) >> 8` of bytes, with no
+    effect, where its context converts it or needs only its value, becomes
+    `(uint8_t)(H + T + (L + C > 0xFF))`, uncast where that context converts to a byte;
 - a store to a local dead after it goes when its value is computed from variables and
   constants alone, and becomes its value as a statement when that calls or stores;
 - statements control never reaches go;
