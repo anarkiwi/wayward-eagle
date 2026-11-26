@@ -1,7 +1,7 @@
 # Rewrites
 
 `wayward_eagle.c.reduce` rewrites a `c_ast.FuncDef`:
-`reduce_function(fd, noreturn, status, taken)` returns `[FuncDef]`, each piece `static` and
+`reduce_function(fd, noreturn, status, taken, outer)` returns `[FuncDef]`, each piece `static` and
 named apart from `taken` and every name `fd` mentions, the original last (`reduce_unit` and
 `wayward-eagle reduce` do this for every function of a file, taking the file's names; see
 [the C layer](c.md#reducing)).
@@ -23,8 +23,8 @@ an `else if`, an `else` and a `goto` one. A function is
 | `ending` (`guarded`, loop bodies) | a function's or loop body's last `if`, or one whose arm leaves before the rest | one arm leaves first by `return` or `continue`, the other after it at the outer level, wherever that costs less once the moved statements end the level in turn |
 | `extracted` | a function above `THRESHOLD` (25, SonarQube's default for C) | while above it, the nested block whose extraction saves the most, its call site counted, becomes a function (`PIECE_xK`) taking the variables live into it that the rest of the function mentions: one leaving by one kind of exit (`return`, `break`, `continue`) returns whether it took it and its call is tested (`if (f(..)) return;`), one leaving by several returns a code its call stores in `PIECE_xK_k` and tests per exit, and one setting one variable live wherever control goes on leaving it returns it (`v = f(..);`, taking `v` too when a path through it leaves `v` unset). A block a goto outside enters, that falls into the next case, that returns from a function returning a value, or that both leaves early and sets a variable live after it, stays. |
 
-3. finished: each piece refined again (without widening), then copies propagated, dead
-   stores and unreached statements dropped, trailing jumps trimmed, and parameters pruned
+3. finished: each piece refined again (without widening), then copies propagated,
+   single-use temporaries folded, dead stores and unreached statements dropped, trailing jumps trimmed, and parameters pruned
    ([below](#finishing)).
 
 Every rewrite of step 2 lowers the cost, so each terminates.
@@ -111,6 +111,29 @@ reachability):
   available (on every path the last store to `v` is that copy and `u` is not stored since),
   when it is available at every read of `v` it reaches and no such read is in an expression
   storing `u`, or storing `v` other than as `v = ..` not storing it again;
+- *single-use temporaries folded* (`wayward_eagle.c.fold`, dewolf's expression propagation):
+  a store `v = e;` (a statement) to a local is dropped and `e` read in place of `v` at the
+  one read of `v` it reaches, when
+  - `e` stores nothing, holds no comma, does not read `v` and touches nothing `volatile`;
+  - that read is reached by no other store to `v` and not from the entry without it, and
+    is not in a loop the store is not (it runs once each time the store does);
+  - nothing on a path between them stores what `e` reads (a local `e` reads, or `v`), nor,
+    when `e` reads memory (anything but a local; naming a file-scope array reads nothing),
+    calls or stores to memory; when `e` calls or stores to memory, the read is the very
+    next evaluation and is not under `&&`, `||`, `?:` or a comma;
+  - the rest of the use's expression, but what acts after the read (the calls and stores
+    enclosing it), does not clash with `e` the same way, and the read is not under `sizeof`;
+  - the value is the same: the read's context converts it to `v`'s type (a store `x = v`
+    to an object of that type, an argument to a parameter of that type, a `return` from a
+    function returning it), or `v`'s type holds every value `e` may take (its range from
+    C's conversions over the types of locals and of `outer`'s objects, arrays and
+    functions' returns) and either the context needs only the value (a converted one as
+    before, a condition, an operand of `!`, `&&`, `||`) or `e`'s type promotes as `v`'s
+    does, in both data models;
+  - the use's expression then holds at most `fold.SIZE` (24) nodes, and the function's
+    cognitive complexity does not rise;
+
+  repeated until none applies (one fold may open another, folding a chain into its end);
 - a store to a local dead after it goes when its value is computed from variables and
   constants alone, and becomes its value as a statement when that calls or stores;
 - statements control never reaches go;

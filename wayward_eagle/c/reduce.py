@@ -11,6 +11,7 @@ from typing import Callable, NamedTuple
 from pycparser import c_ast
 
 from . import query as q
+from .fold import folded
 from .listflow import Graph, propagated, reachable, unstored
 from .refine import Rotation, refined, trimmed
 from .sink import sunk
@@ -687,12 +688,13 @@ def _signature(name, args, ret, types, status):
     return c_ast.Decl(name, [], None, ["static"], [], c_ast.FuncDecl(params, rtype), None, None)
 
 
-def reduce_function(  # pylint: disable=too-many-locals
-    fd, noreturn=frozenset(), status=None, taken=frozenset()
-):
+# pylint: disable-next=too-many-locals,too-many-arguments,too-many-positional-arguments
+def reduce_function(fd, noreturn=frozenset(), status=None, taken=frozenset(), outer=None):
     """``[FuncDef]`` of C function ``fd`` rewritten (:func:`reduced`): the functions it is cut
     into (each ``static``, none named as in ``taken``) first, ``fd``'s own last; ``[fd]`` when
-    its locals cannot move. ``noreturn``: functions that never return; ``status``: exit codes."""
+    its locals cannot move. ``noreturn``: functions that never return; ``status``: exit codes;
+    ``outer``: ``{name: declarator}`` of the file-scope objects and functions it may mention
+    (:func:`declarators`), which single-use temporaries are folded by."""
     status = status if status is not None else _named_type(["int"])
     params = _params(fd)
     types = dict(params)
@@ -716,7 +718,18 @@ def reduce_function(  # pylint: disable=too-many-locals
     pieces, secs, temps = reduced(body, name, fn)
     pieces = joined(pieces, fn._replace(params=names))
     types.update({t: copy.deepcopy(status) for t in temps})
-    pieces = [p._replace(items=finished(p.items, p.ret is None, types, stops)) for p in pieces]
+    outer = dict(outer or {})
+    for p in pieces:
+        if p.name != name:
+            outer[p.name] = _signature(p.name, p.args, p.ret, types, status).type
+    pieces = [
+        p._replace(
+            items=finished(
+                p.items, p.ret is None, types, stops, (_returned(fd, p, types, status), outer)
+            )
+        )
+        for p in pieces
+    ]
     if len(secs) > 1:
         pieces.append(Piece(name, names, [call(sec, names) for sec in secs]))
     out = []
@@ -731,14 +744,37 @@ def reduce_function(  # pylint: disable=too-many-locals
     return out
 
 
-def finished(items, void, types, stops=None):
+def _returned(fd, piece, types, status):
+    """The type tree piece ``piece`` of ``fd`` returns, None for nothing."""
+    if piece.ret is None:
+        return None if _returns_void(fd) or piece.name != fd.decl.name else fd.decl.type.type
+    return status if piece.ret == STATUS else types[piece.ret]
+
+
+def finished(items, void, types, stops=None, typed=(None, None)):
     """Statements ``items`` of a function (returning nothing when ``void``) refined
-    (:func:`~wayward_eagle.c.refine.refined`, rotated), copies propagated, dead stores and
-    unreached statements dropped, trailing jumps trimmed and forward gotos left sunk
+    (:func:`~wayward_eagle.c.refine.refined`, rotated), copies propagated, single-use
+    temporaries folded (:func:`~wayward_eagle.c.fold.folded`; ``typed``: the type tree the
+    function returns and ``outer`` as it takes them), dead stores and unreached statements
+    dropped, trailing jumps trimmed and forward gotos left sunk
     (:func:`~wayward_eagle.c.sink.sunk`)."""
     local = set(types)
     items = reachable(Rotation(types, stops)(refined(items, local)), stops)
-    return sunk(trimmed(unstored(propagated(items, types, stops), local, stops), void))
+    items = folded(propagated(items, types, stops), types, *typed, stops)
+    return sunk(trimmed(unstored(items, local, stops), void))
+
+
+def declarators(unit):
+    """``{name: declarator}`` of the objects and functions ``unit`` (a ``c_ast.FileAST`` or
+    :class:`~wayward_eagle.c.Unit`) declares at file scope, as :func:`reduce_function`'s
+    ``outer`` takes them."""
+    ast = getattr(unit, "ast", unit)
+    out = {}
+    for n in ast.ext:
+        d = n.decl if isinstance(n, c_ast.FuncDef) else n
+        if isinstance(d, c_ast.Decl) and d.name and "typedef" not in d.storage:
+            out[d.name] = d.type
+    return out
 
 
 def _exprs(items, f):
@@ -912,10 +948,11 @@ def reduce_unit(unit, status=None, functions=None):
     noreturn = {s.name for s in unit.symbols.values() if s.noreturn}
     taken = {s.name for s in unit.symbols.values() if s.function is None}
     text, out, at = unit.text, [], 0
+    outer = declarators(unit)
     for f in unit.functions:
         if functions is not None and f.decl.name not in functions:
             continue
-        got = reduce_function(f, noreturn, status, taken - {f.decl.name})
+        got = reduce_function(f, noreturn, status, taken - {f.decl.name}, outer)
         taken |= {g.decl.name for g in got}
         if got == [f]:
             continue

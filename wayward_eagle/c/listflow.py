@@ -70,6 +70,21 @@ def true(e):
         return False
 
 
+def reached(edges, starts, avoid=()):
+    """The nodes reached from ``starts`` along ``edges`` (``[[node]]`` of each node's
+    successors, or predecessors), not passing through ``avoid``: its nodes are reached but
+    not left."""
+    seen, todo = set(), list(starts)
+    while todo:
+        n = todo.pop()
+        if n in seen:
+            continue
+        seen.add(n)
+        if n not in avoid:
+            todo += edges[n]
+    return seen
+
+
 class Graph:  # pylint: disable=too-many-instance-attributes
     """The control flow graph of statement list ``items``: a node per expression evaluated
     (``expr``), ``succ`` its successors (none after a call ``stops`` holds), node 0 the exit.
@@ -164,13 +179,11 @@ class Graph:  # pylint: disable=too-many-instance-attributes
 
     def reachable(self):
         """The nodes control reaches from the entry."""
-        seen, todo = {self.entry}, [self.entry]
-        while todo:
-            for s in self.succ[todo.pop()]:
-                if s not in seen:
-                    seen.add(s)
-                    todo.append(s)
-        return seen
+        return reached(self.succ, [self.entry])
+
+    def predecessors(self):
+        """``[[node]]`` of each node's predecessors."""
+        return self._preds()
 
     def _preds(self):
         preds = [[] for _ in self.succ]
