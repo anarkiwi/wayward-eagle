@@ -1,5 +1,5 @@
 """``wayward-eagle`` command line: ``census FILE.c... [--json] [-I DIR]`` and
-``reduce FILE.c [-o OUT.c] [-I DIR] [--status-type T] [--carries]``."""
+``reduce FILE.c [-o OUT.c] [-I DIR] [--status-type T] [--carries] [--recut]``."""
 
 import argparse
 import json
@@ -26,10 +26,13 @@ def main(argv=None):
     red.add_argument("-I", dest="include", action="append", default=[], metavar="DIR")
     red.add_argument("--status-type", default="int", help="type of exit codes (default int)")
     red.add_argument("--carries", action="store_true", help="add-with-carry chains as sums")
+    red.add_argument("--recut", action="store_true", help="labelled tails left cut again")
     args = ap.parse_args(argv)
     if args.command == "reduce":
         status = c_ast.TypeDecl(None, [], None, c_ast.IdentifierType([args.status_type]))
-        text = reduce_unit(load(args.file, args.include), status, carries=args.carries)
+        text = reduce_unit(
+            load(args.file, args.include), status, carries=args.carries, recut=args.recut
+        )
         if args.out is None:
             sys.stdout.write(text)
         else:
