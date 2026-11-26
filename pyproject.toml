@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-xdist", "pytest-cov", "black", "pylint"]
+dev = ["pytest", "pytest-xdist", "pytest-cov", "black", "pylint", "pysayme>=0.4.0"]
 
 [project.scripts]
 wayward-eagle = "wayward_eagle.cli:main"
@@ -52,3 +52,14 @@ max-line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Code here must not duplicate code its dependencies already export (pysayme). A key in
+# `allow` is a deliberate duplicate; its value says why.
+[tool.pysayme]
+roots = ["wayward_eagle", "tests", "tools"]
+ignore-dists = ["pytest", "pytest-xdist", "pytest-cov", "black", "pylint", "pysayme"]
+
+[tool.pysayme.allow]
+"tests/test_census.py:test_class_absent -> tests/test_census.py:test_class_found" = "one case table read for its defect and for its fix: the two halves of each class's test"
+"tests/test_census.py:test_duplicate_code_ignores_names_of_its_own_locals -> tests/test_census.py:test_duplicate_code_leaves_tail_calls" = "separate duplicate-code cases sharing the census call"
+"wayward_eagle/c/printer.py:Generator.visit_AttributeSpecifier -> pycparser.c_generator:CGenerator.visit_AttributeSpecifier" = "an override: pycparser's spells C23's [[a, b]], clang's AST and this printer GNU __attribute__((a, b))"

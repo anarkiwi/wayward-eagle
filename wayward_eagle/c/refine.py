@@ -65,11 +65,19 @@ def exit_test(st):
     return None
 
 
+def stepped(st):
+    """Whether loop ``st`` is a ``for`` with an init or a step."""
+    return isinstance(st, c_ast.For) and (st.init is not None or st.next is not None)
+
+
+def unconditional(st):
+    """Whether loop ``st`` tests nothing: no condition, or a nonzero literal."""
+    return st.cond is None or true(st.cond)
+
+
 def infinite(st):
     """Whether loop ``st`` has no condition, init or step: ``for (;;)``, ``while (1)``."""
-    if isinstance(st, c_ast.For) and (st.init is not None or st.next is not None):
-        return False
-    return st.cond is None or true(st.cond)
+    return not stepped(st) and unconditional(st)
 
 
 def effectful(e):
@@ -101,11 +109,11 @@ def shaped(st):
             init, step = (st.init, st.next) if isinstance(st, c_ast.For) else (None, None)
             st = c_ast.For(init, None, step, braced(leaving(st.cond) + body), st.coord)
     body = block(st.stmt)
-    if not body or not (st.cond is None or true(st.cond)):
+    if not body or not unconditional(st):
         return st
     first, last = exit_test(body[0]), exit_test(body[-1])
     if first is not None:
-        if isinstance(st, c_ast.For) and (st.init is not None or st.next is not None):
+        if stepped(st):
             return c_ast.For(st.init, negate(first), st.next, braced(body[1:]), st.coord)
         return c_ast.While(negate(first), braced(body[1:]), st.coord)
     if last is not None and infinite(st) and not jumps_out(body, c_ast.Continue):

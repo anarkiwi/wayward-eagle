@@ -140,7 +140,7 @@ class Types:
         if k >= len(params) or not isinstance(params[k], (c_ast.Decl, c_ast.Typename)):
             return None
         tree = params[k].type
-        return None if getattr(tree.type, "names", None) == ["void"] else tree
+        return None if q.is_void(tree) else tree
 
     def bound(self, e, bits):  # pylint: disable=too-many-return-statements
         """The :class:`Bound` of expression ``e`` with an ``int`` of ``bits`` bits, None when

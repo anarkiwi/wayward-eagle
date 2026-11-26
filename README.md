@@ -26,4 +26,4 @@ print(c.render(c.prototypes(pieces) + pieces))  # the static pieces first, fd's 
   virtuous-cycles adapter ratchets them.
 
 Install: `pip install wayward-eagle`. Development: `pip install -e .[dev]`, then
-`pytest -n auto --cov=wayward_eagle`.
+`pytest -n auto --cov=wayward_eagle` (CI adds `--pysayme --pysayme-behaviour`: no code duplicating its own or its dependencies').

@@ -10,7 +10,7 @@ from typing import NamedTuple
 from pycparser import c_ast
 
 from .c import ints, query as q
-from .c.flow import build
+from .c.flow import build, parameters
 
 HEX = frozenset("0123456789abcdefABCDEF")
 #: The width of ``int`` constants are evaluated in.
@@ -216,11 +216,6 @@ def raw_memory(unit):
     return sites
 
 
-def _params(fd):
-    args = fd.decl.type.args
-    return [p for p in (args.params if args else ()) if isinstance(p, c_ast.Decl)]
-
-
 def _pointed(unit, f, addressed):
     """``(expression, callee)`` of each integer ``f`` uses as an address: converted to a
     pointer (callee None), or passed as an argument ``addressed`` holds of."""
@@ -242,7 +237,7 @@ def address_parameters(unit):
     one its function converts to a pointer, or passes as such a parameter, whole (under casts
     to integer types), a least fixed point over the call graph. A parameter added to a
     constant is an index, not an address."""
-    params = {f: {unit.sema[p].ref: i for i, p in enumerate(_params(f))} for f in unit.functions}
+    params = {f: {unit.sema[p].ref: i for i, p in enumerate(parameters(f))} for f in unit.functions}
     out, more = set(), True
     while more:
         more = False

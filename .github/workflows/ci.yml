@@ -23,4 +23,4 @@ jobs:
       - name: Lint
         run: pylint wayward_eagle tests
       - name: Test
-        run: pytest tests -n auto --cov=wayward_eagle --cov-fail-under=85
+        run: pytest tests --pysayme --pysayme-behaviour -n auto --cov=wayward_eagle --cov-fail-under=85
