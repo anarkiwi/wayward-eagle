@@ -373,6 +373,18 @@ def iff(cond, then, els=()):
     return c_ast.If(cond, braced(list(then)), braced(list(els)))
 
 
+def unelsed(items):
+    """``items`` with the ``else`` of each ``if`` whose then arm ends in a jump dropped, its
+    statements following the ``if`` in the same list, at every depth."""
+    out = []
+    for st in mapped(items, unelsed):
+        if isinstance(st, c_ast.If) and block(st.iffalse) and ends_in_jump(block(st.iftrue)):
+            out += [c_ast.If(st.cond, st.iftrue, braced([])), *block(st.iffalse)]
+        else:
+            out.append(st)
+    return out
+
+
 def swap(items, old, new):
     """``items`` with the statement list ``old`` (``items`` itself, or one nested in it, by
     identity) replaced by ``new``."""
