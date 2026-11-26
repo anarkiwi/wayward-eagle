@@ -5,12 +5,14 @@ what it does: sections, tails, early exits, flattened arms and extracted blocks
 from __future__ import annotations
 
 import copy
+from collections import Counter
 from itertools import chain, count
 from typing import Callable, NamedTuple
 
 from pycparser import c_ast
 
 from . import query as q
+from .carry import carried
 from .fold import folded
 from .listflow import Graph, propagated, reachable, unstored
 from .refine import Rotation, refined, trimmed
@@ -680,12 +682,15 @@ def _signature(name, args, ret, types, status):
 
 
 # pylint: disable-next=too-many-locals,too-many-arguments,too-many-positional-arguments
-def reduce_function(fd, noreturn=frozenset(), status=None, taken=frozenset(), outer=None):
+def reduce_function(
+    fd, noreturn=frozenset(), status=None, taken=frozenset(), outer=None, *, carries=False
+):
     """``[FuncDef]`` of C function ``fd`` rewritten (:func:`reduced`): the functions it is cut
     into (each ``static``, none named as in ``taken``) first, ``fd``'s own last; ``[fd]`` when
     its locals cannot move. ``noreturn``: functions that never return; ``status``: exit codes;
     ``outer``: ``{name: declarator}`` of the file-scope objects and functions it may mention
-    (:func:`declarators`), which single-use temporaries are folded by."""
+    (:func:`declarators`), which single-use temporaries are folded by; ``carries``: whether
+    add-with-carry chains become sums (:mod:`~wayward_eagle.c.carry`)."""
     status = status if status is not None else _named_type(["int"])
     params = _params(fd)
     types = dict(params)
@@ -721,6 +726,8 @@ def reduce_function(fd, noreturn=frozenset(), status=None, taken=frozenset(), ou
         )
         for p in pieces
     ]
+    if carries:
+        pieces = _carried(pieces, types, stops, (fd, status, outer))
     if len(secs) > 1:
         pieces.append(Piece(name, names, [call(sec, names) for sec in secs]))
     out = []
@@ -732,6 +739,26 @@ def reduce_function(fd, noreturn=frozenset(), status=None, taken=frozenset(), ou
         decl = fd.decl if p.name == name else _signature(p.name, p.args, p.ret, types, status)
         out.append(c_ast.FuncDef(decl, None, braced(items)))
     out.sort(key=lambda f: f.decl.name == name)
+    return out
+
+
+def _shared(pieces, seen):
+    """The names more than one of ``pieces`` mentions (``seen`` each one's) or one takes."""
+    counts = Counter(v for names in seen for v in names)
+    return {v for v, k in counts.items() if k > 1} | {a for p in pieces for a in p.args}
+
+
+def _carried(pieces, types, stops, context):
+    """``pieces`` with add-with-carry chains rewritten (:func:`~wayward_eagle.c.carry.carried`),
+    widening only locals one piece alone mentions and none takes, then folded again."""
+    fd, status, outer = context
+    seen = [names_in(p.items) for p in pieces]
+    shared = _shared(pieces, seen)
+    out = []
+    for p, names in zip(pieces, seen):
+        typed = (_returned(fd, p, types, status), outer)
+        items, widened = carried(p.items, types, (names & set(types)) - shared, typed, stops)
+        out.append(p._replace(items=folded(items, types, *typed, stops) if widened else items))
     return out
 
 
@@ -928,10 +955,10 @@ def prototypes(functions):
     return [f.decl for f in functions[:-1] if "static" in f.decl.storage]
 
 
-def reduce_unit(unit, status=None, functions=None):
+def reduce_unit(unit, status=None, functions=None, carries=False):
     """The C text of :class:`~wayward_eagle.c.Unit` ``unit`` with each function definition
-    (of the names ``functions``, all when None) reduced (:func:`reduce_function`) in place,
-    the rest of the file as written."""
+    (of the names ``functions``, all when None) reduced (:func:`reduce_function`, with
+    ``carries``) in place, the rest of the file as written."""
     from .printer import render  # pylint: disable=import-outside-toplevel
 
     noreturn = {s.name for s in unit.symbols.values() if s.noreturn}
@@ -941,7 +968,7 @@ def reduce_unit(unit, status=None, functions=None):
     for f in unit.functions:
         if functions is not None and f.decl.name not in functions:
             continue
-        got = reduce_function(f, noreturn, status, taken - {f.decl.name}, outer)
+        got = reduce_function(f, noreturn, status, taken - {f.decl.name}, outer, carries=carries)
         taken |= {g.decl.name for g in got}
         if got == [f]:
             continue

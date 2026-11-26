@@ -116,8 +116,13 @@ class Types:
         return type_of(tree, bits)
 
     def element(self, e, bits):
-        """The :class:`Int` of ``e``, a subscript of an array declared at file scope."""
+        """The :class:`Int` of ``e``, a subscript of an array declared at file scope (or of
+        such an array plus or minus an integer)."""
         base = e.name
+        while isinstance(base, c_ast.BinaryOp) and base.op in "+-":
+            if self.bound(base.right, bits) is None:
+                return None
+            base = base.left
         tree = self.outer.get(base.name) if isinstance(base, c_ast.ID) else None
         if not isinstance(tree, c_ast.ArrayDecl) or "volatile" in tree.type.quals:
             return None
@@ -261,11 +266,7 @@ class Folder:  # pylint: disable=too-few-public-methods
 
     def __call__(self, items):
         """``items`` with each fold that applies made, until none does."""
-        while True:
-            got = self._once(items)
-            if got is None:
-                return items
-            items = got
+        return settled(self._once, items)
 
     def _once(self, items):
         graph = Graph(items, self.stops)
@@ -304,16 +305,19 @@ class Folder:  # pylint: disable=too-few-public-methods
         )
         if found is None:
             return None
-        reads = _occurrences(found[2], v)
+        reads = occurrences(found[2], v)
         if len(reads) != 1 or v in _stores_in(found[2], v):
             return None
         site = Site(v, st.rvalue, spot, d, found[0], found[1], readers[0], found[2], reads[0])
-        return site if self._legal(graph, site, mine) else None
+        return site if self.legal(graph, site, mine) else None
 
-    def _legal(self, graph, site, mine):
+    def legal(self, graph, site, mine, same=True):
         """Whether ``site``'s fold keeps every value read and every effect's order: along
-        the paths from the definition to the use, and within the use."""
-        return self._clear(graph, site, mine) and self._inside(site, mine)
+        the paths from the definition to the use, and within the use; and, with ``same``,
+        reads the same value (:meth:`_same`)."""
+        if not (self._clear(graph, site, mine) and self._inside(site, mine)):
+            return False
+        return not same or self._same(site, ancestors(site.expr, site.read))
 
     def _clear(self, graph, site, mine):
         """Whether the definition alone reaches the use, the use runs once for each time it
@@ -341,9 +345,9 @@ class Folder:  # pylint: disable=too-few-public-methods
 
     def _inside(self, site, mine):
         """Whether the rest of the use's expression lets the value move in: no clash with
-        what is not sequenced after the read, no ``sizeof``, an effect not made conditional,
-        and the same value read (:meth:`_same`)."""
-        path = _ancestors(site.expr, site.read)
+        what is not sequenced after the read, no ``sizeof``, an effect not made
+        conditional."""
+        path = ancestors(site.expr, site.read)
         if any(isinstance(a, c_ast.UnaryOp) and a.op == "sizeof" for a in path):
             return False
         commas = {id(x) for x in q.commas(site.expr)}
@@ -355,7 +359,7 @@ class Folder:  # pylint: disable=too-few-public-methods
         ):
             return False
         rest = facts(site.expr, self.local, frozenset(map(id, path)), site.read, self.arrays)
-        return not clash(mine, rest) and self._same(site, path)
+        return not clash(mine, rest)
 
     def _same(self, site, path):
         """Whether reading ``e`` where the use reads ``v`` gives what that read gave, in both
@@ -364,8 +368,8 @@ class Folder:  # pylint: disable=too-few-public-methods
         promotes as ``v``'s."""
         tree = self.types.local[site.var]
         parent = path[-1] if path else None
-        target = self._target(site, parent)
-        if target is not None and _alike(target, tree):
+        target = converted(self.types, self.ret, site.expr, site.read, parent)
+        if target is not None and alike(target, tree):
             return True
         for bits in MODELS:
             t, b = type_of(tree, bits), self.types.bound(site.value, bits)
@@ -373,34 +377,46 @@ class Folder:  # pylint: disable=too-few-public-methods
                 return False
             if (
                 target is None
-                and not _valued(parent, site.read)
+                and not valued(parent, site.read)
                 and promoted(b.type, bits) != promoted(t, bits)
             ):
                 return False
         return True
 
-    def _target(self, site, parent):
-        """The type tree the read's context converts it to, or None."""
-        read = site.read
-        if isinstance(parent, c_ast.Assignment) and parent.op == "=" and parent.rvalue is read:
-            lv = parent.lvalue
-            if isinstance(lv, c_ast.ID):
-                return self.types.local.get(lv.name) or _object(self.types.outer.get(lv.name))
-            if isinstance(lv, c_ast.ArrayRef) and isinstance(lv.name, c_ast.ID):
-                tree = self.types.outer.get(lv.name.name)
-                return tree.type if isinstance(tree, c_ast.ArrayDecl) else None
-            return None
-        if isinstance(parent, c_ast.ExprList):
-            for call in q.walk(site.expr):
-                if isinstance(call, c_ast.FuncCall) and call.args is parent:
-                    k = next(i for i, x in enumerate(parent.exprs) if x is read)
-                    return self.types.parameter(call, k)
-        if isinstance(parent, c_ast.Return):
-            return self.ret
+
+def settled(once, items):
+    """``items`` rewritten by ``once`` (the rewritten items, or None for none) until it
+    rewrites nothing."""
+    while True:
+        got = once(items)
+        if got is None:
+            return items
+        items = got
+
+
+def converted(types, ret, expr, read, parent):
+    """The type tree ``read``'s context in expression ``expr`` (``parent`` its parent, None
+    at the top) converts it to (``types`` a :class:`Types`, ``ret`` what the function
+    returns), or None: a store's value, a prototyped argument, a returned value."""
+    if isinstance(parent, c_ast.Assignment) and parent.op == "=" and parent.rvalue is read:
+        lv = parent.lvalue
+        if isinstance(lv, c_ast.ID):
+            return types.local.get(lv.name) or _object(types.outer.get(lv.name))
+        if isinstance(lv, c_ast.ArrayRef) and isinstance(lv.name, c_ast.ID):
+            tree = types.outer.get(lv.name.name)
+            return tree.type if isinstance(tree, c_ast.ArrayDecl) else None
         return None
+    if isinstance(parent, c_ast.ExprList):
+        for call in q.walk(expr):
+            if isinstance(call, c_ast.FuncCall) and call.args is parent:
+                k = next(i for i, x in enumerate(parent.exprs) if x is read)
+                return types.parameter(call, k)
+    if isinstance(parent, c_ast.Return):
+        return ret
+    return None
 
 
-def _alike(a, b):
+def alike(a, b):
     """Whether type trees ``a`` and ``b`` are one integer type in both data models."""
     return all(
         type_of(a, bits) is not None and type_of(a, bits) == type_of(b, bits) for bits in MODELS
@@ -411,7 +427,7 @@ def _object(tree):
     return tree if isinstance(tree, c_ast.TypeDecl) else None
 
 
-def _valued(parent, read):
+def valued(parent, read):
     """Whether ``read``'s context needs only its value: the condition of a statement, the
     operand of ``!`` or of ``&&``/``||``, an expression statement's own value."""
     if parent is None:
@@ -439,7 +455,7 @@ def _use_of(items, graph, n):
     return None
 
 
-def _occurrences(e, v):
+def occurrences(e, v):
     """The ``ID`` nodes of ``e`` reading variable ``v``."""
     skip = {
         id(x.lvalue)
@@ -468,7 +484,7 @@ def _stores_in(e, v):
     return set()
 
 
-def _ancestors(e, target):
+def ancestors(e, target):
     """The nodes from ``e`` down to ``target``'s parent."""
     path = []
 

@@ -136,9 +136,14 @@ def equal(a, b, unit=None):
     return key(a, unit) == key(b, unit)
 
 
+def spelled(tree, name):
+    """Whether type tree ``tree`` is spelled as the one type name ``name``."""
+    return isinstance(tree, c_ast.TypeDecl) and getattr(tree.type, "names", None) == [name]
+
+
 def is_void(tree):
     """Whether type tree ``tree`` is plain ``void``."""
-    return isinstance(tree, c_ast.TypeDecl) and getattr(tree.type, "names", None) == ["void"]
+    return spelled(tree, "void")
 
 
 def stored(n):

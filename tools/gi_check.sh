@@ -16,5 +16,6 @@ docker run --rm -v "$GI":/src:ro -v "$WE":/we:ro -e HOME=/tmp -e BASE="${BASE:-}
   python3 -c "import wayward_eagle, importlib.metadata as m; print(\"wayward-eagle\", m.version(\"wayward-eagle\"))"
   cd /work
   for t in ${*:-$(ls tunes)}; do
-    printf "%s: " "$t"; make -s -C tunes/$t check 2>&1 | grep -E "OK|MISMATCH|rror" | tr "\n" " "; echo
+    printf "%s: " "$t"; make -s -C tunes/$t check 2>&1 | grep -E "OK|MISMATCH|rror" | tr "\n" " "
+    printf "prg %s bytes\n" "$(stat -c %s tunes/$t/build/gen.prg 2>/dev/null)"
   done' sh "$@"
