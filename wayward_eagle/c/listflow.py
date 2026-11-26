@@ -10,15 +10,16 @@ from . import query as q
 from .ints import MODELS, Int, constant, promoted, type_of, value
 from .stmt import (
     arms,
+    assigned,
     block,
     children,
     dropped,
     heads,
     is_fallthrough,
     pure,
-    rebuild,
-    reheaded,
+    rehead,
     remap,
+    spliced,
 )
 
 
@@ -290,34 +291,16 @@ def unstored(items, local, stops=None):
     while True:
         graph, new = Graph(items, stops), {}
         for lst, i, st in _positions(items):
-            if _store(st, local) and st.lvalue.name not in graph.live_out(graph.at[(id(lst), i)]):
+            if assigned(st) in local and st.lvalue.name not in graph.live_out(
+                graph.at[(id(lst), i)]
+            ):
                 if pure(st.rvalue):
                     new[(id(lst), i)] = []
                 elif q.calls(st.rvalue) or q.writes(st.rvalue):
                     new[(id(lst), i)] = [st.rvalue]
         if not new:
             return items
-        items = _replaced(items, new)
-
-
-def _store(st, local):
-    """Whether ``st`` is ``v = e`` to a variable of ``local``."""
-    return (
-        isinstance(st, c_ast.Assignment)
-        and st.op == "="
-        and isinstance(st.lvalue, c_ast.ID)
-        and st.lvalue.name in local
-    )
-
-
-def _replaced(items, new):
-    """``items`` with the statement at each position of ``new`` replaced by its list."""
-    out = []
-    for i, st in enumerate(items):
-        if children(st):
-            st = rebuild(st, [_replaced(sub, new) for sub in children(st)])
-        out += new.get((id(items), i), [st])
-    return out
+        items = spliced(items, lambda lst, i, st, new=new: new.get((id(lst), i), [st]))
 
 
 def propagated(items, types, stops=None):
@@ -341,9 +324,7 @@ def propagated(items, types, stops=None):
 
     def fix(lst, i, st):
         nodes = graph.heads.get((id(lst), i), [])
-        exprs = heads(st)
-        new = [_renamed(e, dict(avail[n] & ok)) or e for e, n in zip(exprs, nodes)]
-        return reheaded(st, new) if any(a is not b for a, b in zip(new, exprs)) else st
+        return rehead(st, [_renamed(e, dict(avail[n] & ok)) or e for e, n in zip(heads(st), nodes)])
 
     return remap(items, fix)
 

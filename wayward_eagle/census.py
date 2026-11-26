@@ -824,8 +824,7 @@ class Casts:
 
 
 def _is_void(param):
-    t = getattr(param, "type", None)
-    return isinstance(t, c_ast.TypeDecl) and getattr(t.type, "names", None) == ["void"]
+    return q.is_void(getattr(param, "type", None))
 
 
 def _key(unit, n):

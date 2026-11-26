@@ -180,26 +180,25 @@ def names_in(items):
     return out
 
 
+def _union(items, k):
+    """The union of fact ``k`` of :func:`_tree` over statements ``items``."""
+    return set().union(*(_tree(st)[k] for st in items))
+
+
 def reads_in(items):
     """Every variable ``items`` read, nested statements included."""
-    out = set()
-    for st in items:
-        out |= _tree(st)[0]
-    return out
+    return _union(items, 0)
 
 
 def writes(items):
     """Every variable ``items`` set, in an assignment, increment or decrement anywhere in
     them (a loop's condition, a comma expression) included."""
-    out = set()
-    for st in items:
-        out |= _tree(st)[1]
-    return out
+    return _union(items, 1)
 
 
 def targets(items):
     """The labels the gotos of ``items`` jump to, nested ones included."""
-    return {st.name for st in walk(items) if is_goto(st) and isinstance(st.name, str)}
+    return set().union(*map(q.targets, items))
 
 
 def labels(items):
@@ -434,6 +433,30 @@ def reheaded(st, exprs):
         init, cond, nxt = (None if x is None else next(it) for x in (st.init, st.cond, st.next))
         return c_ast.For(init, cond, nxt, st.stmt, st.coord)
     return exprs[0] if exprs else st
+
+
+def assigned(st):
+    """The variable ``st`` (a statement or expression) is ``v = e`` to, else None."""
+    if isinstance(st, c_ast.Assignment) and st.op == "=" and isinstance(st.lvalue, c_ast.ID):
+        return st.lvalue.name
+    return None
+
+
+def rehead(st, exprs):
+    """``st`` evaluating ``exprs`` in place of its :func:`heads`: ``st`` itself when each is
+    the one it evaluates, else :func:`reheaded`."""
+    return reheaded(st, exprs) if any(a is not b for a, b in zip(exprs, heads(st))) else st
+
+
+def spliced(items, f):
+    """``items`` with each statement ``st`` at ``(list, index)``, its nested lists spliced
+    first, replaced by the list ``f(list, index, st)`` gives."""
+    out = []
+    for i, st in enumerate(items):
+        if children(st):
+            st = rebuild(st, [spliced(sub, f) for sub in children(st)])
+        out += f(items, i, st)
+    return out
 
 
 def remap(items, f):

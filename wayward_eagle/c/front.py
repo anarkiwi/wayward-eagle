@@ -838,11 +838,15 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
         self.info(node, j, rng)
         return node
 
+    def _typename(self, qual):
+        """The ``Typename`` of clang type spelling ``qual``."""
+        tree = self.types.tree(qual)
+        return c_ast.Typename(None, _quals(tree), None, tree)
+
     def e_CStyleCastExpr(self, j, rng):  # pylint: disable=invalid-name
         """``(T)e``, its cast kind recorded."""
         (a,) = self._exprs(j)
-        tree = self.types.tree(_type(j).qual)
-        node = c_ast.Cast(c_ast.Typename(None, _quals(tree), None, tree), a)
+        node = c_ast.Cast(self._typename(_type(j).qual), a)
         self.info(node, j, rng).cast = j["castKind"]
         return node
 
@@ -856,8 +860,7 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
     def e_UnaryExprOrTypeTraitExpr(self, j, rng):  # pylint: disable=invalid-name
         """``sizeof`` and ``_Alignof`` of a type or an expression."""
         if "argType" in j:
-            tree = self.types.tree(j["argType"]["qualType"])
-            arg = c_ast.Typename(None, _quals(tree), None, tree)
+            arg = self._typename(j["argType"]["qualType"])
         else:
             (arg,) = self._exprs(j)
         node = c_ast.UnaryOp(j["name"], arg)
@@ -878,8 +881,7 @@ class _Import:  # pylint: disable=too-many-public-methods,too-many-instance-attr
     def e_CompoundLiteralExpr(self, j, rng):  # pylint: disable=invalid-name
         """``(T){...}``"""
         (init,) = self._exprs(j)
-        tree = self.types.tree(_type(j).qual)
-        node = c_ast.CompoundLiteral(c_ast.Typename(None, _quals(tree), None, tree), init, [])
+        node = c_ast.CompoundLiteral(self._typename(_type(j).qual), init, [])
         self.info(node, j, rng)
         return node
 

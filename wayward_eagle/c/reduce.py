@@ -18,6 +18,7 @@ from .sink import sunk
 from .stmt import (
     LABELS,
     arms,
+    assigned,
     assigned_first,
     block,
     braced,
@@ -36,9 +37,10 @@ from .stmt import (
     order,
     own,
     rebuild,
-    reheaded,
+    rehead,
     remap,
     returning,
+    spliced,
     swap,
     unelsed,
     targets,
@@ -371,12 +373,7 @@ def _ender(ret):
 def _splice(items, f):
     """``items`` with each statement, nested ones included, replaced by the list ``f``
     gives for it."""
-    out = []
-    for st in items:
-        if children(st):
-            st = rebuild(st, [_splice(sub, f) for sub in children(st)])
-        out += f(st)
-    return out
+    return spliced(items, lambda _lst, _i, st: f(st))
 
 
 def calling(items, calls):
@@ -625,35 +622,30 @@ def _alone(items, st, v):
 
 def _initializes(st, v):
     """Whether statement ``st`` is ``v = e`` with ``e`` not reading ``v``."""
-    return (
-        isinstance(st, c_ast.Assignment)
-        and st.op == "="
-        and isinstance(st.lvalue, c_ast.ID)
-        and st.lvalue.name == v
-        and v not in q.reads(st.rvalue)
-    )
+    return assigned(st) == v and v not in q.reads(st.rvalue)
 
 
 def _clean(items):
     """``items`` as plain ``c_ast``: an empty ``else`` none, one holding only an ``if`` an
     ``else if``, an arm falling off its end into the next a ``break``."""
-    out = []
-    for st in items:
-        if children(st):
-            st = rebuild(st, [_clean(sub) for sub in children(st)])
-            if isinstance(st, c_ast.If):
-                els = block(st.iffalse)
-                st.iffalse = (
-                    None
-                    if not els
-                    else els[0] if len(els) == 1 and isinstance(els[0], c_ast.If) else st.iffalse
-                )
-            if isinstance(st, c_ast.Switch):
-                for _, sub in arms(st)[:-1]:
-                    if not ends_in_jump(sub):
-                        sub.append(c_ast.Break())
-        out.append(st)
-    return out
+
+    def plain(_lst, _i, st):
+        if not children(st):
+            return [st]
+        if isinstance(st, c_ast.If):
+            els = block(st.iffalse)
+            st.iffalse = (
+                None
+                if not els
+                else els[0] if len(els) == 1 and isinstance(els[0], c_ast.If) else st.iffalse
+            )
+        if isinstance(st, c_ast.Switch):
+            for _, sub in arms(st)[:-1]:
+                if not ends_in_jump(sub):
+                    sub.append(c_ast.Break())
+        return [st]
+
+    return spliced(items, plain)
 
 
 def _params(fd):
@@ -671,8 +663,7 @@ def _named_type(names, declname=None):
 
 
 def _returns_void(fd):
-    t = fd.decl.type.type
-    return isinstance(t, c_ast.TypeDecl) and getattr(t.type, "names", None) == ["void"]
+    return q.is_void(fd.decl.type.type)
 
 
 def _signature(name, args, ret, types, status):
@@ -781,9 +772,7 @@ def _exprs(items, f):
     """``items`` with each node of their expressions for which ``f`` gives one replaced."""
 
     def fix(_lst, _i, st):
-        exprs = heads(st)
-        new = [q.replaced(e, f) for e in exprs]
-        return reheaded(st, new) if any(a is not b for a, b in zip(new, exprs)) else st
+        return rehead(st, [q.replaced(e, f) for e in heads(st)])
 
     return remap(items, fix)
 

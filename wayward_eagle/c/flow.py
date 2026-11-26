@@ -360,7 +360,7 @@ class Flow:  # pylint: disable=too-many-instance-attributes
         self.facts = [self._facts(n) for n in self.cfg.nodes]
         self.defs = [
             Def(self.cfg.entry, unit.sema[p].ref, None, True, None)
-            for p in _params(fd)
+            for p in parameters(fd)
             if p in unit.sema and unit.sema[p].ref in self.own
         ]
         for x, n in enumerate(self.cfg.nodes):
@@ -484,15 +484,25 @@ class Flow:  # pylint: disable=too-many-instance-attributes
 
     # Analyses.
 
-    def reaching(self):
-        """Each vertex's reaching definitions (bit sets over :attr:`defs`) where it begins."""
+    def _defining(self, keep):
+        """``(gen, kill)`` of each vertex: the definitions ``keep(i, def)`` holds of made
+        there, every definition of the variables it surely defines."""
         n = len(self.cfg.nodes)
         gen, kill = [0] * n, [0] * n
         for i, d in enumerate(self.defs):
-            gen[d.vertex] |= 1 << i
             if d.must:
                 kill[d.vertex] |= self.mask[d.var]
-        return solve(self.cfg, gen, [k & ~g for k, g in zip(kill, gen)])[0]
+            if keep(i, d):
+                gen[d.vertex] |= 1 << i
+        return gen, kill
+
+    def _solved(self, gen, kill, universe=None):
+        """:func:`solve` of the forward problem of ``gen`` and ``kill`` less ``gen``."""
+        return solve(self.cfg, gen, [k & ~g for k, g in zip(kill, gen)], universe)
+
+    def reaching(self):
+        """Each vertex's reaching definitions (bit sets over :attr:`defs`) where it begins."""
+        return self._solved(*self._defining(lambda _i, _d: True))[0]
 
     def pairs(self):
         """``{(variable id, source key): bit}`` of every copy :attr:`defs` makes."""
@@ -572,8 +582,7 @@ class Flow:  # pylint: disable=too-many-instance-attributes
         for x, f in enumerate(self.facts):
             for v in f.reads | f.stores:
                 kill[x] |= self.mask.get(v, 0)
-        kill = [k & ~g for k, g in zip(kill, gen)]
-        out = solve(self.cfg, gen, kill, (1 << len(self.defs)) - 1)[1]
+        out = self._solved(gen, kill, (1 << len(self.defs)) - 1)[1]
         found = []
         for j in self.cfg.joins():
             by_var = {}
@@ -636,13 +645,8 @@ class Flow:  # pylint: disable=too-many-instance-attributes
     def _dirty(self, rd, value, bit):
         """Each vertex's definitions (bits over :attr:`defs`) reaching it along a path from
         which something may change what their values read."""
-        n, cfg = len(self.cfg.nodes), self.cfg
-        gen, kill = [0] * n, [0] * n
-        for i, d in enumerate(self.defs):
-            if d.must:
-                kill[d.vertex] |= self.mask[d.var]
-            if value[i][0] >> bit.index(d.var) & 1:
-                gen[d.vertex] |= 1 << i
+        cfg = self.cfg
+        gen, kill = self._defining(lambda i, d: value[i][0] >> bit.index(d.var) & 1)
         for x in cfg.order:
             node = self._evaluated(cfg.nodes[x])
             if node is None:
@@ -651,7 +655,7 @@ class Flow:  # pylint: disable=too-many-instance-attributes
             for i in bits(rd[x] & ~kill[x]):
                 if bit.conflict(value[i], (r, w)):
                     gen[x] |= 1 << i
-        return solve(cfg, gen, [k & ~g for k, g in zip(kill, gen)])[0]
+        return self._solved(gen, kill)[0]
 
     def _clash(self, x, use, value, bit):
         """Whether vertex ``x`` may change what ``value`` reads before it reads ``use`` (an
@@ -732,7 +736,7 @@ def _ancestors(n, target):
     return NOTHING
 
 
-def _params(fd):
+def parameters(fd):
     """The parameter declarations of function definition ``fd``."""
     args = fd.decl.type.args
     return [p for p in (args.params if args else ()) if isinstance(p, c_ast.Decl)]
