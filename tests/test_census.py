@@ -10,6 +10,7 @@ import sys
 import pytest
 
 from wayward_eagle import census as cen
+from wayward_eagle import adapter as ad
 from wayward_eagle.cli import main
 
 FUZZ = pathlib.Path(__file__).parent / "fixtures" / "fuzz"
@@ -574,13 +575,13 @@ def test_adapter_keys(tmp_path):
     path.write_text(
         HEAD + "void f(int c) { int x = c; if (x) { goto out; } out:; }\n", encoding="utf-8"
     )
-    got = cen.adapter({"files": [str(tmp_path / "*.c")]})
+    got = ad.adapter({"files": [str(tmp_path / "*.c")]})
     assert got["t:goto"] == 1 and got["t:dead-store"] == 0
     assert got["t:cognitive-complexity"] == 2 and got["t:locals"] == 1
     assert got["t:lines"] == 1 and got["t:statements"] == 3
     assert got["t:locals:single-use"] == 1 and got["t:locals:clobbered"] == 0
     assert len(got) == len(cen.CLASSES) + 3 + len(cen.REASONS)
-    by_fn = cen.adapter(
+    by_fn = ad.adapter(
         {
             "files": [str(path)],
             "key": "{class}/{function}",
@@ -593,7 +594,7 @@ def test_adapter_keys(tmp_path):
     )
     assert by_fn == {"goto/f": 1, "copy-variable/f": 1, str(path): 2}
     with pytest.raises(ValueError):
-        cen.adapter({"files": [str(tmp_path / "none-*.c")]})
+        ad.adapter({"files": [str(tmp_path / "none-*.c")]})
 
 
 def test_adapter_combine(tmp_path):
@@ -605,13 +606,36 @@ def test_adapter_combine(tmp_path):
         encoding="utf-8",
     )
     weights = {"opacity": {"opaque-name": 1, "raw-memory": 2}}
-    plain = cen.adapter({"files": [str(path)]})
-    got = cen.adapter({"files": [str(path)], "combine": weights})
+    plain = ad.adapter({"files": [str(path)]})
+    got = ad.adapter({"files": [str(path)], "combine": weights})
     assert plain["t:opaque-name"] == 1 and plain["t:raw-memory"] == 2
     assert got.pop("t:opacity") == 5
     assert got == {k: v for k, v in plain.items() if k not in ("t:opaque-name", "t:raw-memory")}
-    by_fn = cen.adapter({"files": [str(path)], "key": "{class}/{function}", "combine": weights})
+    by_fn = ad.adapter({"files": [str(path)], "key": "{class}/{function}", "combine": weights})
     assert by_fn["opacity/f"] == 5 and not {"opaque-name/f", "raw-memory/f"} & set(by_fn)
+
+
+def test_adapter_combine_measures(tmp_path):
+    """``combine`` weights the per-file measures as it does classes: their keys replaced by
+    one of the weighted sum, and a name of no class or measure refused."""
+    path = tmp_path / "t.c"
+    path.write_text(
+        HEAD + "uint8_t m[64];\nvoid f(int c) { int a, b; { int t = c; m[t] = a + b; } }\n",
+        encoding="utf-8",
+    )
+    plain = ad.adapter({"files": [str(path)]})
+    weights = {
+        "size": {"lines": 1, "statements": 2},
+        "defs": {f"locals:{r}": 1 for r in cen.REASONS},
+    }
+    got = ad.adapter({"files": [str(path)], "combine": weights})
+    assert got.pop("t:size") == plain["t:lines"] + 2 * plain["t:statements"]
+    reasons = [f"t:locals:{r}" for r in cen.REASONS]
+    assert got.pop("t:defs") == sum(plain[k] for k in reasons) > 0
+    gone = {"t:lines", "t:statements", *reasons}
+    assert got == {k: v for k, v in plain.items() if k not in gone}
+    with pytest.raises(ValueError, match="no class or measure"):
+        ad.adapter({"files": [str(path)], "combine": {"x": {"lnes": 1}}})
 
 
 VC = shutil.which("virtuous-cycles", path=os.path.dirname(sys.executable))

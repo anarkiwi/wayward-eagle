@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wayward-eagle"
-version = "0.5.4"
+version = "0.5.5"
 description = "Lower the cognitive complexity of C function bodies, keeping what they do, and census C readability defects"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -33,7 +33,7 @@ dev = ["pytest", "pytest-xdist", "pytest-cov", "black", "pylint"]
 wayward-eagle = "wayward_eagle.cli:main"
 
 [project.entry-points."virtuous_cycles.adapters"]
-wayward-census = "wayward_eagle.census:adapter"
+wayward-census = "wayward_eagle.adapter:adapter"
 
 [project.urls]
 Repository = "https://github.com/anarkiwi/wayward-eagle"
