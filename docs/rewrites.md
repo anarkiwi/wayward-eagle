@@ -134,7 +134,7 @@ reachability):
     cognitive complexity does not rise;
 
   repeated until none applies (one fold may open another, folding a chain into its end);
-- *carry chains as sums* (`wayward_eagle.c.carry`, only with `carries`), in each piece after
+- *carry chains as sums* (`wayward_eagle.c.carry`, unless `carries=False`), in each piece after
   it is finished, then temporaries folded again; each over locals typed `uint8_t` that one
   piece alone mentions and none takes, and kept only where it lowers the piece's cognitive
   complexity, else its statements, else its nodes:
@@ -185,7 +185,7 @@ reachability):
     nothing the `if` changes after it;
 
   each where the cognitive complexity, counted as printed (`else if`), does not rise;
-- *labelled pieces cut again* (`wayward_eagle.c.recut`, only with `recut`): a piece
+- *labelled pieces cut again* (`wayward_eagle.c.recut`, unless `recut=False`): a piece
   returning nothing left with a top-level label is reduced again, kept where that lowers
   both its gotos and its total cognitive complexity and adds no piece returning exit codes;
 - a parameter of a `static` piece it never mentions goes, with its argument in each call of

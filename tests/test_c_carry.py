@@ -114,13 +114,13 @@ def test_shift_in_arithmetic_stays(tmp_path):
     assert "<< 8" in reduced(tmp_path, body)
 
 
-def test_carries_are_opt_in(tmp_path):
-    """Without ``carries`` the chains stay bytes."""
+def test_carries_can_be_off(tmp_path):
+    """Without ``carries`` the chains stay bytes; they are sums by default."""
     path = tmp_path / "f.c"
     path.write_text(
         HEAD + "void f(uint8_t a, uint8_t b, uint8_t c) { uint8_t t = a + b;"
         " uint8_t x = t + (c != 0); put(x); put(t < a || x < t); }\n",
         encoding="utf-8",
     )
-    assert "uint16_t x" not in r.reduce_unit(front.load(path), functions={"f"})
-    assert "uint16_t x" in r.reduce_unit(front.load(path), functions={"f"}, carries=True)
+    assert "uint16_t x" not in r.reduce_unit(front.load(path), functions={"f"}, carries=False)
+    assert "uint16_t x" in r.reduce_unit(front.load(path), functions={"f"})
