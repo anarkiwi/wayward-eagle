@@ -496,8 +496,8 @@ class Count(NamedTuple):
 
 def _candidates(vals):
     """``[(operator, constant)]`` of the comparisons true of each of ``vals`` but the last
-    and false of it that a reader takes for a bound: ``<``/``<=`` when they rise, ``>``/``>=``
-    when they fall, and ``!=`` when the last is new."""
+    and false of it that a reader takes for a bound: ordered when they rise or fall or the
+    last lies beyond the rest, and ``!=`` when the last is new."""
     *got, last = vals
     out = [("!=", last)] if last not in got else []
     pairs = list(zip(vals, vals[1:]))
@@ -505,6 +505,10 @@ def _candidates(vals):
         out += [("<", last), ("<=", got[-1])]
     if all(a > b for a, b in pairs):
         out += [(">", last), (">=", got[-1])]
+    if last > max(got):
+        out += [("<", max(got) + 1), ("<=", max(got))]
+    if last < min(got):
+        out += [(">", min(got) - 1), (">=", min(got))]
     return out
 
 

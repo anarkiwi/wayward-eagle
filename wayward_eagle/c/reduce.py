@@ -18,8 +18,10 @@ from .fold import folded
 from .joins import rejoined
 from .consts import specialised
 from .recut import recut as cut_again
+from .lockstep import lockstepped
 from .listflow import Graph, propagated, reachable, unstored
 from .refine import Rotation, refined, trimmed
+from .shifts import HELPERS, helpers, shifted
 from .sink import sunk
 from .stmt import (
     LABELS,
@@ -32,8 +34,8 @@ from .stmt import (
     children,
     cost,
     ends_in_jump,
+    exprs_replaced,
     fresh,
-    heads,
     iff,
     is_fallthrough,
     is_goto,
@@ -44,8 +46,6 @@ from .stmt import (
     order,
     own,
     rebuild,
-    rehead,
-    remap,
     returning,
     spliced,
     swap,
@@ -787,8 +787,10 @@ def finished(items, void, types, stops=None, typed=(None, None)):
     dropped, trailing jumps trimmed and forward gotos left sunk
     (:func:`~wayward_eagle.c.sink.sunk`)."""
     local = set(types)
-    items = reachable(Rotation(types, stops)(refined(items, local)), stops)
-    items = folded(propagated(items, types, stops), types, *typed, stops)
+    items = reachable(
+        lockstepped(Rotation(types, stops)(refined(items, local)), types, stops), stops
+    )
+    items = shifted(folded(propagated(items, types, stops), types, *typed, stops), types)
     return rejoined(sunk(trimmed(unstored(items, local, stops), void)), local, typed[1])
 
 
@@ -803,15 +805,6 @@ def declarators(unit):
         if isinstance(d, c_ast.Decl) and d.name and "typedef" not in d.storage:
             out[d.name] = d.type
     return out
-
-
-def _exprs(items, f):
-    """``items`` with each node of their expressions for which ``f`` gives one replaced."""
-
-    def fix(_lst, _i, st):
-        return rehead(st, [q.replaced(e, f) for e in heads(st)])
-
-    return remap(items, fix)
 
 
 def _status_site(st, name):
@@ -952,7 +945,7 @@ def pruned(pieces, top):
                 return c_ast.FuncCall(n.name, c_ast.ExprList(args) if args else None, n.coord)
             return None
 
-        pieces = [x._replace(items=_exprs(x.items, drop)) for x in pieces]
+        pieces = [x._replace(items=exprs_replaced(x.items, drop)) for x in pieces]
 
 
 def _void():
@@ -965,15 +958,24 @@ def prototypes(functions):
     return [f.decl for f in functions[:-1] if "static" in f.decl.storage]
 
 
+def _helpers(functions, defined):
+    """The definitions of the :data:`~.shifts.HELPERS` ``functions`` call not in ``defined``,
+    added to it."""
+    needed = [h for h in helpers(functions) if h not in defined]
+    defined.update(needed)
+    return [HELPERS[h] for h in needed]
+
+
 def reduce_unit(unit, status=None, functions=None, carries=True, recut=True):
     """The C text of :class:`~wayward_eagle.c.Unit` ``unit`` with each function definition
     (of the names ``functions``, all when None) reduced (:func:`reduce_function`, with
-    ``carries`` and ``recut``) in place, the rest of the file as written."""
+    ``carries`` and ``recut``) in place, after the first the :data:`~.shifts.HELPERS` it
+    calls, the rest of the file as written."""
     from .printer import render  # pylint: disable=import-outside-toplevel
 
     noreturn = {s.name for s in unit.symbols.values() if s.noreturn}
     taken = {s.name for s in unit.symbols.values() if s.function is None}
-    text, out, at = unit.text, [], 0
+    out, at, defined = [], 0, set()
     outer = declarators(unit)
     for f in unit.functions:
         if functions is not None and f.decl.name not in functions:
@@ -985,6 +987,7 @@ def reduce_unit(unit, status=None, functions=None, carries=True, recut=True):
         if got == [f]:
             continue
         info = unit.sema[f]
-        out += [text[at : info.begin.offset].decode(), render(prototypes(got) + got, unit.macros)]
+        out += [unit.text[at : info.begin.offset].decode(), *_helpers(got, defined)]
+        out.append(render(prototypes(got) + got, unit.macros))
         at = info.end.offset + info.end.toklen
-    return "".join(out) + text[at:].decode()
+    return "".join(out) + unit.text[at:].decode()
