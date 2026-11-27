@@ -1,4 +1,4 @@
-"""``wayward-eagle`` command line: ``census FILE.c... [--json] [-I DIR]`` and
+"""``wayward-eagle`` command line: ``census FILE.c... [--json] [-I DIR] [--reader NAME]`` and
 ``reduce FILE.c [-o OUT.c] [-I DIR] [--status-type T] [--carries] [--recut]``."""
 
 import argparse
@@ -8,7 +8,7 @@ import sys
 from pycparser import c_ast
 
 from .c import load, reduce_unit
-from .census import census_all
+from .census import READERS, census_all
 
 
 def main(argv=None):
@@ -20,6 +20,14 @@ def main(argv=None):
     cen.add_argument("-I", dest="include", action="append", default=[], metavar="DIR")
     cen.add_argument("-j", "--jobs", type=int, default=None)
     cen.add_argument("--json", action="store_true", help="sites, counts and complexity as JSON")
+    cen.add_argument(
+        "--reader",
+        dest="readers",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="a function whose one call is no effect-in-condition (default io_read)",
+    )
     red = sub.add_parser("reduce", help="each function of a C file reduced, as C")
     red.add_argument("file", metavar="FILE.c")
     red.add_argument("-o", dest="out", default=None, metavar="OUT.c")
@@ -39,7 +47,8 @@ def main(argv=None):
             with open(args.out, "w", encoding="utf-8") as f:
                 f.write(text)
         return 0
-    reports = census_all(args.files, args.include, args.jobs)
+    readers = READERS if args.readers is None else args.readers
+    reports = census_all(args.files, args.include, args.jobs, readers=readers)
     if args.json:
         out = {
             path: {

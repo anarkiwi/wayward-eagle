@@ -6,6 +6,7 @@ and jump to: the form :mod:`wayward_eagle.c.reduce` rewrites. Every nested body 
 from __future__ import annotations
 
 import weakref
+from itertools import count
 
 from pycparser import c_ast
 
@@ -469,3 +470,10 @@ def remap(items, f):
             new = rebuild(new, [remap(sub, f) for sub in children(st)])
         out.append(new)
     return out
+
+
+def fresh(base, taken):
+    """``base``, or ``BASE_K`` for the least ``K`` from 2 when ``base`` is in ``taken``."""
+    if base not in taken:
+        return base
+    return next(n for n in (f"{base}_{k}" for k in count(2)) if n not in taken)

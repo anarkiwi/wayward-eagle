@@ -151,11 +151,17 @@ def groups(items, unit):
     return out
 
 
-class Unit:  # pylint: disable=too-many-instance-attributes
-    """One parsed C file and the census of its functions over clang's AST."""
+#: Functions whose one call is a condition's only effect without making it a site: reads of
+#: a device register, which a polling loop tests as it reads.
+READERS = ("io_read",)
 
-    def __init__(self, path, args=()):
-        self.path, self.args = real(str(path)), list(args)
+
+class Unit:  # pylint: disable=too-many-instance-attributes
+    """One parsed C file and the census of its functions over clang's AST (``readers``:
+    :data:`READERS`)."""
+
+    def __init__(self, path, args=(), readers=READERS):
+        self.path, self.args, self.readers = real(str(path)), list(args), frozenset(readers)
         self.c = c.load(path, args=self.args)
         self.functions = self.c.functions
         self.spans = sorted((*self.c.span(f), f.decl.name) for f in self.functions)
@@ -232,7 +238,7 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             status = self._status(n.cond) if effects else None
             if status is not None:
                 self.add("status-call", n, f"call {status}")
-            elif effects:
+            elif effects and not self._read(n.cond, effects):
                 self.add("effect-in-condition", n, ", ".join(effects))
         if isinstance(n, c_ast.Compound):
             sub = list(n.block_items or ())
@@ -321,6 +327,16 @@ class Unit:  # pylint: disable=too-many-instance-attributes
             elif isinstance(x, c_ast.FuncCall) and self._call_effect(x):
                 out.add(f"call {q.callee(x) or ''}")
         return sorted(out)
+
+    def _read(self, cond, effects):
+        """Whether condition ``cond``'s only effect (``effects``) is one call of a reader,
+        its arguments without effects."""
+        calls = [x for x in q.walk(cond) if isinstance(x, c_ast.FuncCall) and self._call_effect(x)]
+        if len(calls) != 1 or q.callee(calls[0]) not in self.readers:
+            return False
+        return effects == [f"call {q.callee(calls[0])}"] and not any(
+            self.effects(a) for a in q.arguments(calls[0])
+        )
 
     # status-call.
 
@@ -941,13 +957,14 @@ class Tidy:  # pylint: disable=too-few-public-methods
         return self.diagnostics
 
 
-def census(path, include=(), args=()):
-    """The ``Report`` of C file ``path``, its headers found in directories ``include``."""
+def census(path, include=(), args=(), readers=READERS):
+    """The ``Report`` of C file ``path``, its headers found in directories ``include``
+    (``readers``: :data:`READERS`)."""
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
     args = [*(f"-I{d}" for d in include), *args]
     run = Tidy(path, args)
     try:
-        unit = Unit(path, args)
+        unit = Unit(path, args, readers)
         ast = unit.census()
     finally:
         run.wait()
@@ -958,14 +975,15 @@ def census(path, include=(), args=()):
     return Report(sites, scores, unit.locals(), *legible.size(unit.c), names, unit.reasons)
 
 
-def census_all(paths, include=(), jobs=None, quiet=False):
-    """``{path: Report}`` of every file of ``paths``, ``jobs`` at a time."""
+def census_all(paths, include=(), jobs=None, quiet=False, readers=READERS):
+    """``{path: Report}`` of every file of ``paths``, ``jobs`` at a time (``readers``:
+    :data:`READERS`)."""
     paths = list(paths)
     jobs = min(jobs or len(os.sched_getaffinity(0)), max(len(paths), 1))
     out = {}
     ctx = multiprocessing.get_context("forkserver")
     with concurrent.futures.ProcessPoolExecutor(jobs, mp_context=ctx) as pool:
-        futures = {pool.submit(census, p, tuple(include)): p for p in paths}
+        futures = {pool.submit(census, p, tuple(include), (), tuple(readers)): p for p in paths}
         done = concurrent.futures.as_completed(futures)
         for fut in tqdm(done, total=len(paths), desc="census", unit="file", disable=quiet):
             out[futures[fut]] = fut.result()

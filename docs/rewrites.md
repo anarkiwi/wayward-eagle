@@ -191,3 +191,18 @@ reachability):
 - a parameter of a `static` piece it never mentions goes, with its argument in each call of
   the piece, until none is left; a parameter of the original function it never reads is
   `(void)p;`.
+- *constant arguments* (`wayward_eagle.c.consts`), over the pieces of one function, until
+  none applies: a parameter of a piece no call of which stores or addresses it, every call
+  passing a constant for it, is that constant. The constant comes from a literal, or from the
+  conditions on every path to the call (`v == K`, `!v`, through `&&`, an `if` arm, an
+  earlier `if` whose other arm leaves) over variables stored once (parameters never, locals
+  by their initializer), through such locals' initializers, the same in both data models:
+  - one constant: the parameter goes, each read of it the constant;
+  - up to two (`consts.VALUES`): the piece is copied per value (`PIECE_K`, `K` the value),
+    each call calling its value's copy, or, for a piece of one statement
+    (`consts.INLINE`), put in place of each call, the constant passed; whichever leaves the
+    lower cognitive complexity, then statements, then functions;
+
+  each rewritten piece simplified: a constant subexpression of type `int` in both data
+  models becomes its value, and `x + 0`, `x - 0`, `x ^ 0`, `x | 0`, `x << 0`, `x >> 0`
+  (`0 + x`, ..) becomes `x` where `x` is an arithmetic result or its context promotes it.

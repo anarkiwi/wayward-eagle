@@ -195,6 +195,15 @@ def targets(n):
     return {c.name for c in walk(n) if isinstance(c, c_ast.Goto) and isinstance(c.name, str)}
 
 
+def addressed(n):
+    """The names whose address ``n`` takes."""
+    return {
+        c.expr.name
+        for c in walk(n)
+        if isinstance(c, c_ast.UnaryOp) and c.op == "&" and isinstance(c.expr, c_ast.ID)
+    }
+
+
 def writes(n):
     """The variables ``n`` stores to: assigned, incremented or decremented, at any depth."""
     out = set()

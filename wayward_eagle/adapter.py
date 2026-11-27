@@ -6,7 +6,7 @@ import pathlib
 from collections import Counter
 
 from .c.flow import REASONS
-from .census import CLASSES, COGNITIVE, census_all
+from .census import CLASSES, COGNITIVE, READERS, census_all
 
 #: The per-file measures ``combine`` may weight beside classes: the most lines and statements
 #: of a function, the definitions of automatic variables and those of each reason.
@@ -32,7 +32,8 @@ def adapter(options):  # pylint: disable=too-many-locals
     ``statements`` (the most lines and statements of a function of the file keys); empty
     for none; ``combine`` (each name's weights of classes and :data:`MEASURES`: one key,
     ``class`` the name, of the weighted sum of their sites and per-file values, in place of
-    theirs)."""
+    theirs); ``readers`` (functions whose one call is no ``effect-in-condition``, default
+    :data:`~wayward_eagle.census.READERS`)."""
     files = sorted({p for g in options["files"] for p in glob.glob(g, recursive=True)})
     if not files:
         raise ValueError(f"no files match {options['files']}")
@@ -46,7 +47,8 @@ def adapter(options):  # pylint: disable=too-many-locals
     if unknown:
         raise ValueError(f"combine names no class or measure: {sorted(unknown)}")
     out = Counter()
-    for path, rep in census_all(files, options.get("include", ())).items():
+    readers = options.get("readers", READERS)
+    for path, rep in census_all(files, options.get("include", ()), readers=readers).items():
         names = {"stem": pathlib.Path(path).stem, "path": path}
         held = [(k, "", 0) for k in ("{function}" not in template) * CLASSES[1:]]
         for cls, fn, n in held + [(s.cls, s.function, 1) for s in rep.sites]:
