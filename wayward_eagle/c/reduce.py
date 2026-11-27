@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
+from functools import partial
 from itertools import chain, count
 from typing import Callable, NamedTuple
 
@@ -14,6 +15,8 @@ from pycparser import c_ast
 from . import query as q
 from .carry import carried
 from .fold import folded
+from .joins import rejoined
+from .recut import recut as cut_again
 from .listflow import Graph, propagated, reachable, unstored
 from .refine import Rotation, refined, trimmed
 from .sink import sunk
@@ -681,16 +684,33 @@ def _signature(name, args, ret, types, status):
     return c_ast.Decl(name, [], None, ["static"], [], c_ast.FuncDecl(params, rtype), None, None)
 
 
-# pylint: disable-next=too-many-locals,too-many-arguments,too-many-positional-arguments
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments
 def reduce_function(
-    fd, noreturn=frozenset(), status=None, taken=frozenset(), outer=None, *, carries=False
+    fd,
+    noreturn=frozenset(),
+    status=None,
+    taken=frozenset(),
+    outer=None,
+    *,
+    carries=False,
+    recut=False,
 ):
     """``[FuncDef]`` of C function ``fd`` rewritten (:func:`reduced`): the functions it is cut
     into (each ``static``, none named as in ``taken``) first, ``fd``'s own last; ``[fd]`` when
     its locals cannot move. ``noreturn``: functions that never return; ``status``: exit codes;
     ``outer``: ``{name: declarator}`` of the file-scope objects and functions it may mention
     (:func:`declarators`), which single-use temporaries are folded by; ``carries``: whether
-    add-with-carry chains become sums (:mod:`~wayward_eagle.c.carry`)."""
+    add-with-carry chains become sums (:mod:`~wayward_eagle.c.carry`); ``recut``: whether
+    labelled pieces are cut again (:mod:`~wayward_eagle.c.recut`)."""
+    context = (frozenset(noreturn), status, outer, carries)
+    got = _reduce(fd, taken, context)
+    return cut_again(got, partial(_reduce, context=context), status, taken) if recut else got
+
+
+# pylint: disable-next=too-many-locals
+def _reduce(fd, taken, context):
+    """:func:`reduce_function`'s first cut (``context``: noreturn, status, outer, carries)."""
+    noreturn, status, outer, carries = context
     status = status if status is not None else _named_type(["int"])
     params = _params(fd)
     types = dict(params)
@@ -779,7 +799,7 @@ def finished(items, void, types, stops=None, typed=(None, None)):
     local = set(types)
     items = reachable(Rotation(types, stops)(refined(items, local)), stops)
     items = folded(propagated(items, types, stops), types, *typed, stops)
-    return sunk(trimmed(unstored(items, local, stops), void))
+    return rejoined(sunk(trimmed(unstored(items, local, stops), void)), local, typed[1])
 
 
 def declarators(unit):
@@ -955,10 +975,10 @@ def prototypes(functions):
     return [f.decl for f in functions[:-1] if "static" in f.decl.storage]
 
 
-def reduce_unit(unit, status=None, functions=None, carries=False):
+def reduce_unit(unit, status=None, functions=None, carries=False, recut=False):
     """The C text of :class:`~wayward_eagle.c.Unit` ``unit`` with each function definition
     (of the names ``functions``, all when None) reduced (:func:`reduce_function`, with
-    ``carries``) in place, the rest of the file as written."""
+    ``carries`` and ``recut``) in place, the rest of the file as written."""
     from .printer import render  # pylint: disable=import-outside-toplevel
 
     noreturn = {s.name for s in unit.symbols.values() if s.noreturn}
@@ -968,7 +988,9 @@ def reduce_unit(unit, status=None, functions=None, carries=False):
     for f in unit.functions:
         if functions is not None and f.decl.name not in functions:
             continue
-        got = reduce_function(f, noreturn, status, taken - {f.decl.name}, outer, carries=carries)
+        got = reduce_function(
+            f, noreturn, status, taken - {f.decl.name}, outer, carries=carries, recut=recut
+        )
         taken |= {g.decl.name for g in got}
         if got == [f]:
             continue

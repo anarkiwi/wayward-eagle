@@ -171,6 +171,23 @@ reachability):
   `switch` the `goto` breaks out of), each `goto` leaving, where that keeps or lowers the
   cost; a `goto` inside a loop, a label also reached from after it, or a tail holding code
   that would go on two paths (no statement of code is copied), stays;
+- *joins by condition* (`wayward_eagle.c.joins`), nested lists first:
+  - an infinite loop left by one `break` of its own and by gotos to one label outside it
+    (none in a loop or `switch` nested in it), the statements after it ending in a jump and
+    holding no label, `break` or `continue`, has them put at the `break`, each goto a
+    `break`, and a goto after the loop;
+  - a label every goto to which ends a path through the one `if` before it holding them
+    (statements after an `if` one arm of which ends in the goto and the other is empty
+    moved into that other arm) goes, the gotos with it, and the statements between the `if`
+    and the label are guarded by the negation of the paths' conditions (each `&&` of the
+    path's tests, `||` of the paths, negated by De Morgan's laws); where statements lie
+    between, each test must have no effect, store nothing, spell no `volatile` and read
+    nothing the `if` changes after it;
+
+  each where the cognitive complexity, counted as printed (`else if`), does not rise;
+- *labelled pieces cut again* (`wayward_eagle.c.recut`, only with `recut`): a piece
+  returning nothing left with a top-level label is reduced again, kept where that lowers
+  both its gotos and its total cognitive complexity and adds no piece returning exit codes;
 - a parameter of a `static` piece it never mentions goes, with its argument in each call of
   the piece, until none is left; a parameter of the original function it never reads is
   `(void)p;`.
