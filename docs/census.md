@@ -104,7 +104,10 @@ the condition of an `if`, `while`, `do`/`while` or `for`. A call has none when i
 is declared `pure` or `const`, or is defined in the file and neither stores outside its own
 automatic variables, accesses a volatile object, runs inline assembly, calls through a
 pointer, nor calls a function with an effect (a fixed point over the file's call graph).
-A condition that is a `status-call` is not a site of this class.
+A condition that is a `status-call` is not a site of this class, nor one whose only effect
+is one call of a reader (`io_read` by default; `--reader NAME`, the adapter's `readers`),
+its arguments without effects: `while (io_read(0xD012) != 0xFC)` polls a device register,
+reading it as it tests it.
 
 ### `status-call`
 

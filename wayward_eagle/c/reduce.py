@@ -7,7 +7,7 @@ from __future__ import annotations
 import copy
 from collections import Counter
 from functools import partial
-from itertools import chain, count
+from itertools import count
 from typing import Callable, NamedTuple
 
 from pycparser import c_ast
@@ -16,6 +16,7 @@ from . import query as q
 from .carry import carried
 from .fold import folded
 from .joins import rejoined
+from .consts import specialised
 from .recut import recut as cut_again
 from .listflow import Graph, propagated, reachable, unstored
 from .refine import Rotation, refined, trimmed
@@ -31,6 +32,7 @@ from .stmt import (
     children,
     cost,
     ends_in_jump,
+    fresh,
     heads,
     iff,
     is_fallthrough,
@@ -73,11 +75,6 @@ class Function(NamedTuple):
     void: bool
     noreturn: Callable = never
     taken: frozenset = frozenset()
-
-
-def fresh(base, taken):
-    """``base``, or ``BASE_K`` for the least ``K`` from 2 when ``base`` is in ``taken``."""
-    return next(n for n in chain([base], (f"{base}_{k}" for k in count(2))) if n not in taken)
 
 
 class Piece(NamedTuple):
@@ -560,15 +557,6 @@ def _hoist(d, types):
     return [c_ast.Assignment("=", c_ast.ID(d.name), d.init, d.coord)]
 
 
-def _addressed(body):
-    """The names whose address ``body`` takes."""
-    return {
-        n.expr.name
-        for n in q.walk(body)
-        if isinstance(n, c_ast.UnaryOp) and n.op == "&" and isinstance(n.expr, c_ast.ID)
-    }
-
-
 def _declared(tree, name):
     """A ``Decl`` of ``name`` of type ``tree``."""
     tree = copy.deepcopy(tree)
@@ -704,7 +692,9 @@ def reduce_function(
     labelled pieces are cut again (:mod:`~wayward_eagle.c.recut`)."""
     context = (frozenset(noreturn), status, outer, carries)
     got = _reduce(fd, taken, context)
-    return cut_again(got, partial(_reduce, context=context), status, taken) if recut else got
+    if recut:
+        got = cut_again(got, partial(_reduce, context=context), status, taken)
+    return specialised(got, taken)
 
 
 # pylint: disable-next=too-many-locals
@@ -716,7 +706,7 @@ def _reduce(fd, taken, context):
     types = dict(params)
     try:
         body = _normal(block(copy.copy(fd.body)), types)
-        if _addressed(fd.body) & set(types):
+        if q.addressed(fd.body) & set(types):
             raise Unsupported("a local's address is taken")
         if any(isinstance(n, c_ast.Goto) and not isinstance(n.name, str) for n in q.walk(fd.body)):
             raise Unsupported("a computed goto")

@@ -332,6 +332,9 @@ def test_uncounted_loop(tmp_path, body, found):
     assert bool(sites(tmp_path, body, (), "uncounted-loop")) == found
 
 
+IO = "int io_read(int a);\n"
+
+
 @pytest.mark.parametrize(
     "body, found",
     [
@@ -348,12 +351,30 @@ def test_uncounted_loop(tmp_path, body, found):
         ("void f(int c) { do { tick(); } while (c--); }", True),
         ("void f(int c) { for (c = 0; c < 3; c++) { tick(); } }", False),
         ("void f(int c) { for (; (c = c - 1);) { tick(); } }", True),
+        # One read of a device register: a poll.
+        (f"{IO}void f(void) {{ while (io_read(0xD012) != 0xFC) {{ tick(); }} }}", False),
+        (f"{IO}void f(void) {{ if (!(io_read(0xD41B) & 1)) {{ tick(); }} }}", False),
+        # Two reads, a read with an effect in its argument, a read and a store.
+        (f"{IO}void f(void) {{ if (io_read(1) == io_read(2)) {{ tick(); }} }}", True),
+        (f"{IO}void f(int c) {{ if (io_read(c++)) {{ tick(); }} }}", True),
+        (f"{IO}void f(int c) {{ if (io_read(1) && (g = c)) {{ tick(); }} }}", True),
     ],
 )
 def test_effect_in_condition(tmp_path, body, found):
     """A store, comma or call that may have an effect in a condition is a site; a call to a
-    function declared or found pure is none."""
+    function declared or found pure is none, nor one read of a device register alone."""
     assert bool(sites(tmp_path, body, (), "effect-in-condition")) == found
+
+
+def test_readers_configured(tmp_path):
+    """With no readers, a poll's one read of a device register is a site."""
+    path = tmp_path / "t.c"
+    path.write_text(
+        HEAD + IO + "void f(void) { while (io_read(0xD012) != 0xFC) { tick(); } }\n",
+        encoding="utf-8",
+    )
+    got = cen.census(path, readers=()).sites
+    assert [s.cls for s in got].count("effect-in-condition") == 1
 
 
 STATUS = "int h(int c) { if (c) { g = c; return 1; } return 0; }\n"
