@@ -300,7 +300,7 @@ class Folder:  # pylint: disable=too-few-public-methods
         readers = _reach_reads(graph, d, graph.mask((v,)))
         found = (
             _use_of(items, graph, readers[0])
-            if len(readers) == 1 and not _volatile(st.rvalue)
+            if len(readers) == 1 and not volatile(st.rvalue)
             else None
         )
         if found is None:
@@ -338,7 +338,7 @@ class Folder:  # pylint: disable=too-few-public-methods
             if e is not None and (
                 clash(mine, facts(e, self.local, arrays=self.arrays))
                 or graph.store[n] & bit
-                or (mine.memory and _volatile(e))
+                or (mine.memory and volatile(e))
             ):
                 return False
         return True
@@ -500,7 +500,8 @@ def ancestors(e, target):
     return path if down(e) else []
 
 
-def _volatile(e):
+def volatile(e):
+    """Whether expression ``e`` spells a ``volatile`` type (a cast or compound literal)."""
     return any(
         isinstance(n, (c_ast.TypeDecl, c_ast.PtrDecl)) and "volatile" in (n.quals or ())
         for n in q.walk(e)

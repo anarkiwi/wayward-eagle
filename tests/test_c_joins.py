@@ -32,11 +32,19 @@ def joined(cc, body):
             "if (v4 == 0 || v4 != 0x3F) { if (v4 == 0 || v4 >= 0x3F) { v4 = R[0x4C]; }"
             " w(v4); } y();",
         ),
+        # A loop left by gotos and one break to a tail ending in a jump: the tail at the
+        # break, each goto a break, the goto after the loop joined.
+        (
+            "if (v1) { for (;;) { x(); if (v2) { v4 = 0; goto L5; } if (R[0]) break;"
+            " if (R[1]) goto L5; y(); } w(v4); return; } else { v4 = 1; } L5:; w(v4);",
+            "if (v1) { for (;;) { x(); if (v2) { v4 = 0; break; } if (R[0]) { w(v4); return; }"
+            " if (R[1]) break; y(); } } else { v4 = 1; } w(v4);",
+        ),
     ],
 )
 def test_gotos_go_by_their_reaching_condition(cc, body, want):
     """A label every goto to which ends a path through the ``if`` before it goes, the
-    statements between guarded by the negated path condition."""
+    statements between guarded by the negated path condition; a loop left by ``break``."""
     assert joined(cc, body) == cc.text(cc.items(want, SIG))
 
 
@@ -103,3 +111,36 @@ def test_tails_cut_again(cc):
     assert measures(got, None) < measures([fd], None)
     plain = cc.fn("x(); y();")
     assert recut([plain], again, None, set()) == [plain]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Two breaks.
+        "if (v1) { for (;;) { if (v2) goto L5; if (R[0]) break; if (R[1]) break; }"
+        " return; } L5:; z();",
+        # A goto inside a nested switch.
+        "if (v1) { for (;;) { switch (v2) { case 1: goto L5; } if (R[0]) break; }"
+        " return; } L5:; z();",
+        # A tail falling off its end.
+        "if (v1) { for (;;) { if (v2) goto L5; if (R[0]) break; } x(); } L5:; z();",
+        # A loop with a condition.
+        "if (v1) { while (v3) { if (v2) goto L5; if (R[0]) break; } return; } L5:; z();",
+    ],
+)
+def test_loops_whose_exits_do_not_fit_stay(cc, body):
+    """Loops the rewrite cannot leave by ``break`` alone keep their gotos."""
+    assert "goto" in joined(cc, body)
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "void f(void) { int a = p; if (k) { for (;;) { x(); if (a) { a = 0; goto L5; }"
+        " if (q) break; if (c0) goto L5; a = 1; } y(); return; } else { a = 1; } L5:; w(a); }",
+    ],
+)
+def test_loops_left_by_break_alone_behave(tmp_path, src):
+    """Reduced functions whose loops are left by ``break`` alone print what the originals
+    do."""
+    behaves(tmp_path, src)

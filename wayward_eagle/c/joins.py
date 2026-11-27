@@ -1,6 +1,7 @@
 """Forward gotos by their reaching condition: a label every goto to which ends a path through
 the ``if`` statement before it goes, the statements between them guarded by the negated
-condition of those paths, when each condition still holds there (docs/rewrites.md)."""
+condition of those paths, when each condition still holds there; and loops left by gotos
+and one ``break`` to a tail ending in a jump left by ``break`` alone (docs/rewrites.md)."""
 
 from __future__ import annotations
 
@@ -11,8 +12,20 @@ from functools import reduce
 from pycparser import c_ast
 
 from . import query as q
-from .fold import clash, facts
-from .stmt import block, braced, children, iff, is_goto, labels, negate, rebuild, targets
+from .fold import clash, facts, volatile
+from .refine import infinite
+from .stmt import (
+    block,
+    braced,
+    children,
+    ends_in_jump,
+    iff,
+    is_goto,
+    labels,
+    negate,
+    rebuild,
+    targets,
+)
 
 
 class _Held(Exception):
@@ -40,6 +53,13 @@ class _Joiner:  # pylint: disable=too-few-public-methods
         ]
         k = 0
         while k < len(items):
+            got = _exited(items, k, depth) if isinstance(items[k], q.LOOPS) else None
+            if got is not None:
+                items, name, gone = got
+                self.counts[name] -= gone - 1
+            k += 1
+        k = 0
+        while k < len(items):
             got = self._join(items, k, depth) if isinstance(items[k], c_ast.Label) else None
             if got is None:
                 k += 1
@@ -58,36 +78,43 @@ class _Joiner:  # pylint: disable=too-few-public-methods
         between = items[i + 1 : j]
         if held != self.counts[name] or labels(between):
             return None
+        st = _tailed(items[i], name)
         try:
-            st = _tailed(items[i], name)
-            paths = self._paths(st, name)
+            paths = self._paths(st, name, bool(between))
         except _Held:
             return None
+        if not between:
+            return self._joined(items, i, j, depth, _dropped(st, name))
         cond = reduce(
             lambda a, b: c_ast.BinaryOp("||", a, b),
             (reduce(lambda a, b: c_ast.BinaryOp("&&", a, b), p) for p in paths),
         )
-        kept = _dropped(st, name)
-        guard = [iff(_not(copy.deepcopy(cond)), between)] if between else []
-        new = items[:i] + kept + guard + items[j + 1 :]
+        guard = [iff(_not(copy.deepcopy(cond)), between)]
+        return self._joined(items, i, j, depth, _dropped(st, name) + guard)
+
+    def _joined(self, items, i, j, depth, new):
+        """``items`` with ``items[i : j + 1]`` replaced by ``new`` where that costs no more,
+        else None."""
+        new = items[:i] + new + items[j + 1 :]
         if _cost(new, depth) > _cost(items, depth):
             return None
-        self.counts[name] = 0
+        self.counts[items[j].name] = 0
         return new
 
-    def _paths(self, st, name):
+    def _paths(self, st, name, pure=True):
         """The paths through ``if`` statement ``st`` (each a list of conditions) ending in
-        ``goto name``, each condition pure and unchanged by what runs after it in ``st``."""
+        ``goto name``, each condition (where ``pure``) pure and unchanged by what runs after
+        it in ``st``."""
         cond = st.cond
         mine = facts(cond, self.local, arrays=self.arrays)
         arms = [block(st.iftrue), block(st.iffalse)]
         after = facts(braced([*arms[0], *arms[1]]), self.local, arrays=self.arrays)
-        if mine.effect or mine.stores or _volatile(cond) or clash(mine, after):
+        if pure and (mine.effect or mine.stores or volatile(cond) or clash(mine, after)):
             raise _Held
-        out = [[cond, *p] for p in self._ends(arms[0], name)]
-        return out + [[negate(cond), *p] for p in self._ends(arms[1], name)]
+        out = [[cond, *p] for p in self._ends(arms[0], name, pure)]
+        return out + [[negate(cond), *p] for p in self._ends(arms[1], name, pure)]
 
-    def _ends(self, items, name):
+    def _ends(self, items, name, pure):
         """The paths through ``items`` ending in ``goto name``: none when no goto to it is
         in them, else the paths through their last statement, the only one holding one."""
         if name not in targets(items):
@@ -98,8 +125,75 @@ class _Joiner:  # pylint: disable=too-few-public-methods
         if is_goto(last, name):
             return [[]]
         if isinstance(last, c_ast.If):
-            return self._paths(last, name)
+            return self._paths(last, name, pure)
         raise _Held
+
+
+def _exited(items, k, depth):
+    """``(items, label, gotos)`` with infinite loop ``items[k]``, left by one ``break`` of its own
+    and by gotos to one label outside it, left by ``break`` alone: the statements after it
+    (ending in a jump, holding no label, ``break`` or ``continue``) put at the ``break``, each
+    goto a ``break`` and a goto after the loop; None where that does not fit or costs more."""
+    loop, tail = items[k], items[k + 1 :]
+    if not infinite(loop) or not ends_in_jump(tail) or labels(tail) or _loose(tail):
+        return None
+    body = block(loop.stmt)
+    exits = _own(body)
+    breaks = [e for e in exits if isinstance(e, c_ast.Break)]
+    names = {e.name for e in exits if isinstance(e, c_ast.Goto)} - labels(body)
+    if len(breaks) != 1 or len(names) != 1 or _buried(body, next(iter(names))):
+        return None
+    name = next(iter(names))
+
+    def swap(st):
+        if st is breaks[0]:
+            return copy.deepcopy(tail)
+        return [c_ast.Break()] if is_goto(st, name) else [st]
+
+    new = items[:k] + [rebuild(loop, [_swapped(body, swap)]), c_ast.Goto(name)]
+    if _cost(new, depth) > _cost(items, depth):
+        return None
+    return new, name, sum(is_goto(e, name) for e in exits)
+
+
+def _own(items):
+    """The jumps of ``items`` leaving the loop around them: gotos and ``break``s not in a
+    loop or ``switch`` nested in them."""
+    out = []
+    for st in items:
+        if isinstance(st, (c_ast.Break, c_ast.Goto)):
+            out.append(st)
+        elif not isinstance(st, (*q.LOOPS, c_ast.Switch)):
+            for sub in children(st):
+                out += _own(sub)
+    return out
+
+
+def _buried(items, name):
+    """Whether a goto to ``name`` in ``items`` lies in a loop or ``switch`` nested in them."""
+    for st in items:
+        if isinstance(st, (*q.LOOPS, c_ast.Switch)):
+            if name in targets([st]):
+                return True
+        elif any(_buried(sub, name) for sub in children(st)):
+            return True
+    return False
+
+
+def _loose(items):
+    """Whether ``items`` hold a ``break`` or ``continue``."""
+    return any(isinstance(n, (c_ast.Break, c_ast.Continue)) for n in q.walk(braced(items)))
+
+
+def _swapped(items, f):
+    """``items`` with each statement ``f`` maps (to a list) replaced, outside nested loops
+    and ``switch`` statements, nested lists first."""
+    out = []
+    for st in items:
+        if children(st) and not isinstance(st, (*q.LOOPS, c_ast.Switch)):
+            st = rebuild(st, [_swapped(sub, f) for sub in children(st)])
+        out += f(st)
+    return out
 
 
 def _tailed(st, name):
@@ -175,10 +269,3 @@ def _chained(items):
             st = rebuild(st, [_chained(sub) for sub in children(st)])
         out.append(st)
     return out
-
-
-def _volatile(e):
-    return any(
-        isinstance(n, (c_ast.TypeDecl, c_ast.PtrDecl)) and "volatile" in (n.quals or ())
-        for n in q.walk(e)
-    )
