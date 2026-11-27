@@ -70,7 +70,8 @@ def _folded(graph, lst, i, types, wide=None):
         return None
     after = graph.live_in(graph.after[(id(lst), i)])
     v = st.init.lvalue.name
-    plans = [_plan(counters, u, v, after, types, wide or set()) for u in sorted(counters)]
+    scope = _Scope(after, types, wide or set())
+    plans = [_plan(counters, u, v, scope) for u in sorted(counters)]
     plans = [p for p in plans if p is not None and p[1]]
     if not plans:
         return None
@@ -174,30 +175,43 @@ def _values(count, t, bits, runs):
     return out
 
 
-def _plan(counters, u, v, after, types, wide):
-    """``(rank, {w: expression of u}, u, condition, widens)`` of the loop counting ``u``, stepped by
-    one, its condition :meth:`Count.head` of ``u`` alone (``u`` an ``int`` when in ``wide``
-    and only that keeps it from wrapping); every other counter dead after the loop and affine
-    in ``u`` folded into its reads; then whether ``u`` widens; or None."""
+class _Scope(NamedTuple):
+    """What a loop's plan may use: the variables live ``after`` it, their ``types``, and
+    those that may widen to ``int`` (``wide``)."""
+
+    after: set
+    types: dict
+    wide: set
+
+
+def _plan(counters, u, v, scope):
+    """``(rank, {w: expression of u}, u, condition, widens)`` of the loop counting ``u``
+    (its own ``v``), stepped by one, its condition :meth:`Count.head` of ``u`` alone (``u``
+    an ``int`` when ``scope`` lets it and only that keeps it from wrapping); every other
+    counter dead after the loop and affine in ``u`` folded into its reads; or None."""
     me = counters[u]
     seq, end = me.values[:-1], me.values[-1]
-    t = type_of(types.get(u), MODELS[0])
-    if len(set(seq)) != len(seq) or (
-        len(seq) > 1 and (seq[1] - seq[0]) % (1 << t.bits) not in (1, (1 << t.bits) - 1)
-    ):
+    if not _by_one(seq, type_of(scope.types.get(u), MODELS[0])):
         return None
-    fits = _fits(counters, u, seq, after, types)
+    fits = _fits(counters, u, seq, scope.after, scope.types)
     if u != v and v not in fits:
         return None
     count = Count(u, me.count.init, me.count.step, c_ast.ID(u))
-    ts = [type_of(types.get(u), b) for b in MODELS]
+    ts = [type_of(scope.types.get(u), b) for b in MODELS]
     cond = count.head(seq, end, ts)
-    widen = u in wide and u not in after and not (cond and count.plain(cond, seq, end, ts))
-    got = widened(count, seq) if widen else None
+    widen = u in scope.wide and u not in scope.after
+    got = widened(count, seq) if widen and not (cond and count.plain(cond, seq, end, ts)) else None
     cond = cond if got is None else got
     if cond is None:
         return None
     return (len(fits), cond.op != "!=", u == v), fits, u, cond, got is not None
+
+
+def _by_one(seq, t):
+    """Whether ``seq`` (of type ``t``) holds distinct values stepped by one up or down."""
+    if len(set(seq)) != len(seq):
+        return False
+    return len(seq) < 2 or (seq[1] - seq[0]) % (1 << t.bits) in (1, (1 << t.bits) - 1)
 
 
 def _fits(counters, u, seq, after, types):
