@@ -1,7 +1,7 @@
 """Constant arguments of the pieces a function is cut into: a parameter every call of a piece
 passes one constant for (known from the path to the call) substituted and dropped; one passed
-a few constants, the piece specialised per value or inlined, whichever costs less
-(docs/rewrites.md)."""
+a few constants, the piece inlined when one statement, else specialised per value where
+that strictly lowers the cognitive complexity and adds no memory access (docs/rewrites.md)."""
 
 from __future__ import annotations
 
@@ -69,20 +69,21 @@ class _Pieces:  # pylint: disable=too-few-public-methods
         self.funcs = [new if g is f else _dropped(g, name, {k: None}) for g in self.funcs]
 
     def _split(self, f, k, values):
-        """Piece ``f`` specialised per value of parameter ``k`` or inlined at its calls,
-        whichever costs less (and only where it fits); whether it was."""
+        """Piece ``f`` inlined at its calls (where it fits), else specialised per value of
+        parameter ``k`` where that strictly lowers the total cognitive complexity and adds
+        no memory access; whether it was either."""
         name, param = f.decl.name, parameters(f)[k].name
-        names = [self._fresh(f"{name}_{v}") for v in values]
-        copies = [_without(f, k, v, param, n) for v, n in zip(values, names)]
         to_type = parameters(f)[k].type
-        spec = [h for g in self.funcs for h in ([g] if g is not f else copies)]
-        spec = [_redirected(g, name, k, dict(zip(values, names)), to_type) for g in spec]
-        options = [spec]
         pinned = [_redirected(g, name, k, None, to_type) for g in self.funcs]
-        inlined = _inlined(pinned, pinned[self.funcs.index(f)])
-        if inlined is not None:
-            options.append(inlined)
-        best = min(options, key=_cost)
+        best = _inlined(pinned, pinned[self.funcs.index(f)])
+        if best is None:
+            names = [fresh(f"{name}_{v}", self.taken) for v in values]
+            copies = [_without(f, k, v, param, n) for v, n in zip(values, names)]
+            spec = [h for g in self.funcs for h in ([g] if g is not f else copies)]
+            spec = [_redirected(g, name, k, dict(zip(values, names)), to_type) for g in spec]
+            if not _better(spec, self.funcs):
+                return False
+            best = spec
         self.funcs = best
         self.taken |= {g.decl.name for g in best}
         return True
@@ -93,15 +94,21 @@ class _Pieces:  # pylint: disable=too-few-public-methods
         return got
 
 
-def _cost(functions):
-    """What a choice costs: total cognitive complexity, statements, then functions."""
-    stmts = sum(1 for f in functions for n in q.walk(f.body) if _is_statement(n))
-    return sum(q.cognitive(f.body) for f in functions), stmts, len(functions)
+def _better(new, old):
+    """Whether functions ``new`` have a lower total cognitive complexity than ``old`` and
+    access memory (subscripts and dereferences) no more often."""
+    return _complexity(new) < _complexity(old) and _accesses(new) <= _accesses(old)
 
 
-def _is_statement(n):
-    return not isinstance(n, c_ast.Compound) and isinstance(
-        n, (c_ast.Decl, c_ast.Assignment, c_ast.FuncCall, c_ast.Return, c_ast.If, *q.LOOPS)
+def _complexity(functions):
+    return sum(q.cognitive(f.body) for f in functions)
+
+
+def _accesses(functions):
+    return sum(
+        isinstance(n, c_ast.ArrayRef) or (isinstance(n, c_ast.UnaryOp) and n.op == "*")
+        for f in functions
+        for n in q.walk(f.body)
     )
 
 
@@ -414,25 +421,61 @@ LEFT_ZERO = {"+", "^", "|"}
 
 def simplified(n):
     """``n`` with each constant subexpression of type ``int`` (in both data models) its
-    value, and ``x op 0`` (``0 op x``) ``x`` where its parent promotes ``x`` anyway."""
-    _simplify(n)
+    value, ``x op 0`` (``0 op x``) ``x`` where its parent promotes ``x`` anyway, ``K && x``
+    and ``K || x`` decided by ``K`` (``x`` where only its truth is tested), and each ``if``
+    of a constant condition the arm it takes."""
+    _simplify(n, None)
     return n
 
 
-def _simplify(n):
+def _simplify(n, _attr):
     for attr, kid in list(_kids(n)):
-        _simplify(kid)
-        got = _folded(kid, n)
+        _simplify(kid, attr)
+        got = _folded(kid, n, attr)
         if got is not kid:
             _set(n, attr, got)
+    if isinstance(n, c_ast.Compound) and n.block_items:
+        n.block_items = [x for st in n.block_items for x in _taken(st)]
 
 
-def _folded(e, parent):
+def _taken(st):
+    """``[st]``, or the statements of the arm an ``if`` of a constant condition takes."""
+    truth = _truth(st.cond) if isinstance(st, c_ast.If) else None
+    if truth is None:
+        return [st]
+    return block(st.iftrue if truth else st.iffalse)
+
+
+def _truth(e):
+    """Whether constant ``e`` is nonzero in both data models, None when it is no constant."""
+    vals = [ints.value(e, {}, b) for b in ints.MODELS]
+    if any(v is None for v in vals) or any(isinstance(c, c_ast.ID) for c in q.walk(e)):
+        return None
+    truths = {v[0] != 0 for v in vals}
+    return truths.pop() if len(truths) == 1 else None
+
+
+def _tested(parent, attr):
+    """Whether the expression at ``attr`` of ``parent`` has only its truth tested."""
+    if isinstance(parent, (c_ast.If, c_ast.TernaryOp, *q.LOOPS)):
+        return attr == "cond"
+    if isinstance(parent, c_ast.UnaryOp):
+        return parent.op == "!"
+    return isinstance(parent, c_ast.BinaryOp) and parent.op in ("&&", "||")
+
+
+def _folded(e, parent, attr=None):
     if _foldable(e) and not any(isinstance(c, c_ast.ID) for c in q.walk(e)):
         vals = [ints.value(e, {}, b) for b in ints.MODELS]
         ok = all(v is not None and v[1] == ints.Int(b, True) for v, b in zip(vals, ints.MODELS))
         if ok and vals[0][0] == vals[1][0] and vals[0][0] >= 0:
             return ints.constant(vals[0][0])
+    if isinstance(e, c_ast.BinaryOp) and e.op in ("&&", "||"):
+        truth = _truth(e.left)
+        if truth is not None and truth == (e.op == "||"):
+            return ints.constant(int(truth))
+        if truth is not None and _tested(parent, attr):
+            return e.right
     if isinstance(e, c_ast.BinaryOp):
         if e.op in RIGHT_ZERO and _zero(e.right) and _promotes(parent, e.left):
             return e.left

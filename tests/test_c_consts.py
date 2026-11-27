@@ -34,8 +34,13 @@ ONE = (
     "static void h(int a, uint8_t b) { w(a + b); w(a - b); }"
     " void f(void) { h(p, 2); if (c0) { h(q, 2); } }"
 )
-TWO = (
+FLAT = (
     "static void h(uint8_t b) { int s = p - (q + (b ^ 1)); w(s); w(s + 1); x(); }"
+    " void f(void) { uint8_t t = p; uint8_t v = t > 1; if (t == 2) { h(v); return; }"
+    " if (!v) { h(v); return; } h(0); }"
+)
+TWO = (
+    "static void h(uint8_t b) { if (b && c1) { w(p); } else { w(q); } x(); }"
     " void f(void) { uint8_t t = p; uint8_t v = t > 1; if (t == 2) { h(v); return; }"
     " if (!v) { h(v); return; } h(0); }"
 )
@@ -56,10 +61,13 @@ def test_one_constant_substituted(cc):
 
 def test_path_constants_specialised(cc):
     """Constants known from the conditions on the path to each call (through a local's one
-    initializer) specialise the piece per value, each simplified."""
+    initializer) specialise the piece per value, each simplified, where that lowers the
+    cognitive complexity; a copy lowering none leaves the piece."""
     _, text = pieces(cc, TWO)
-    assert "int s = p - q;" in text and "int s = p - (q + 1);" in text
-    assert "h_1();" in text and "h_0();" in text and "h(" not in text
+    assert "b && c1" not in text and "{ w(q); x(); }" in text
+    assert "h_1();" in text and "h_0();" in text
+    _, text = pieces(cc, FLAT)
+    assert "h_1" not in text and "h(v);" in text
 
 
 def test_small_pieces_inlined(cc):
@@ -110,6 +118,10 @@ def test_specialised_functions_behave(tmp_path, src):
         ("0 + (p - q)", "p - q"),
         ("-(2 - 3)", "1"),
         ("(uint8_t)1 + 0", "1"),
+        ("(0 && p) + q", "0 + q"),
+        ("(1 || p) * q", "1 * q"),
+        ("(1 && p) + q", "(1 && p) + q"),
+        ("!(1 && p)", "!p"),
     ],
 )
 def test_simplified(cc, expr, want):
@@ -118,3 +130,18 @@ def test_simplified(cc, expr, want):
     items = cc.items(f"w({expr});")
     got = consts.simplified(items[0])
     assert cc.text([got]) == cc.text(cc.items(f"w({want});"))
+
+
+@pytest.mark.parametrize(
+    "body, want",
+    [
+        ("if (1 && p) { x(); } else { y(); }", "if (p) { x(); } else { y(); }"),
+        ("if (0 && p) { x(); } else { y(); } z();", "y(); z();"),
+        ("if (2 - 2) { x(); } z();", "z();"),
+    ],
+)
+def test_constant_conditions(cc, body, want):
+    """A condition decided by a constant left operand loses it; an ``if`` of a constant
+    condition is the arm it takes."""
+    got = consts.simplified(cc.fn(body))
+    assert cc.text(got.body.block_items) == cc.text(cc.fn(want).body.block_items)
