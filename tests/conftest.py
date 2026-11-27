@@ -111,3 +111,9 @@ def behaves(tmp_path, src, call="f()"):
     got = r.reduce_unit(front.load(path), functions={"f"})
     assert run(tmp_path / "reduced.c", got) == run(path, text)
     return got
+
+
+def reduced(cc, src, sig="void f(void)"):
+    """The rendered C of ``src``'s function reduced (not run: it may not end)."""
+    got = r.reduce_function(cc.fn(src, sig), {"trap"})
+    return " ".join(render.render(r.prototypes(got) + got).split())

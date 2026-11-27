@@ -719,6 +719,7 @@ def _reduce(fd, taken, context):
 
     name = fd.decl.name
     body = Rotation(types, stops, widen=True)(refined(body, set(types)))
+    body = lockstepped(body, types, stops, widen=set(n for n, _ in params))
     taken = frozenset(taken) | {n.name for n in q.walk(fd.body) if isinstance(n, c_ast.ID)}
     fn = Function(names, set(types) - set(names), _returns_void(fd), stops, taken)
     pieces, secs, temps = reduced(body, name, fn)

@@ -11,8 +11,8 @@ from pycparser import c_ast
 from . import query as q
 from .ints import MODELS, constant, type_of, value
 from .listflow import Graph
-from .refine import Count, _comma, _init, _loops, _widens, step_of
-from .stmt import block, braced, exprs_replaced, negate, swap, writes
+from .refine import INT, Count, _comma, _init, _loops, _widens, step_of, widened
+from .stmt import block, braced, exprs_replaced, names_in, negate, swap, writes
 
 
 class _Counter(NamedTuple):
@@ -24,15 +24,17 @@ class _Counter(NamedTuple):
     values: list[int]
 
 
-def lockstepped(items, types, stops=None):
+def lockstepped(items, types, stops=None, widen=None):
     """``items`` with every ``for`` loop whose counters fold into one folded
-    (:func:`_folded`); ``types`` the variables' type trees, ``stops`` noreturn calls."""
+    (:func:`_folded`); ``types`` the variables' type trees, ``stops`` noreturn calls; when
+    ``widen`` (names that must keep their type), a counter it lacks may become ``int``."""
     failed = set()
     while True:
         graph = Graph(items, stops)
         for lst, i, st in _loops(items):
             if id(st) not in failed:
-                got = _folded(graph, lst, i, types)
+                wide = None if widen is None else _alone(items, lst, i, widen)
+                got = _folded(graph, lst, i, types, wide)
                 if got is not None:
                     items = swap(items, lst, got)
                     break
@@ -41,23 +43,47 @@ def lockstepped(items, types, stops=None):
             return items
 
 
-def _folded(graph, lst, i, types):
+def _alone(items, lst, i, keep):
+    """The variables not in ``keep`` nor under ``sizeof`` that nothing in ``items`` mentions
+    but loop ``i`` of ``lst`` and statements of ``lst`` setting them alone."""
+    rest = [x for j, x in enumerate(lst) if j != i and not _sets(x)]
+    sized = {
+        x.name
+        for n in q.walk(lst[i])
+        if isinstance(n, c_ast.UnaryOp) and n.op == "sizeof"
+        for x in q.walk(n.expr)
+        if isinstance(x, c_ast.ID)
+    }
+    return names_in([lst[i]]) - names_in(swap(items, lst, rest)) - set(keep) - sized
+
+
+def _sets(st):
+    """Whether ``st`` is ``v = e;`` mentioning nothing but ``v``."""
+    return isinstance(st, c_ast.Assignment) and len(q.writes(st)) == 1 == len(names_in([st]))
+
+
+def _folded(graph, lst, i, types, wide=None):
     """List ``lst`` with its loop ``i`` counting one counter stepped by one and the others,
     dead after it, that counter's affine functions in their reads; or None."""
     st, counters = lst[i], _counters(lst, i, types)
     if counters is None:
         return None
     after = graph.live_in(graph.after[(id(lst), i)])
-    plans = [_plan(counters, u, st.init.lvalue.name, after, types) for u in sorted(counters)]
+    v = st.init.lvalue.name
+    scope = _Scope(after, types, wide or set())
+    plans = [_plan(counters, u, v, scope) for u in sorted(counters)]
     plans = [p for p in plans if p is not None and p[1]]
     if not plans:
         return None
-    return _rebuilt(lst, i, counters, max(plans, key=lambda p: p[0]))
+    return _rebuilt(lst, i, counters, max(plans, key=lambda p: p[0]), types)
 
 
-def _rebuilt(lst, i, counters, plan):
-    """List ``lst`` with its loop ``i`` (of ``counters``) counting as ``plan`` has it."""
-    st, (_, fits, u, cond) = lst[i], plan
+def _rebuilt(lst, i, counters, plan, types):
+    """List ``lst`` with its loop ``i`` (of ``counters``) counting as ``plan`` has it, its
+    counter's type in ``types`` ``int`` when it widens."""
+    st, (_, fits, u, cond, wide) = lst[i], plan
+    if wide:
+        types[u] = INT
     keep = [counters[w].count.step for w in counters if w not in fits]
     body = exprs_replaced(block(st.stmt), lambda n: fits.get(n.name) if _read(n) else None)
     init = st.init if counters[u].at is None else lst[counters[u].at]
@@ -126,7 +152,10 @@ def _runs(found, v, types):
 def _length(count, ts):
     """How many runs the body of ``count``'s loop, its exit tested first, takes in every
     model, or None."""
-    got = [count.sequence(t, b) if t is not None else None for t, b in zip(ts, MODELS)]
+    got = [
+        count.sequence(t, b, 1 << min(t.bits, 16)) if t is not None else None
+        for t, b in zip(ts, MODELS)
+    ]
     if None in got or got[0] != got[1]:
         return None
     return len(got[0][0]) - 1
@@ -146,30 +175,55 @@ def _values(count, t, bits, runs):
     return out
 
 
-def _plan(counters, u, v, after, types):
-    """``(rank, {w: expression of u}, u, condition)`` of the loop counting ``u``, stepped by
-    one, its condition :meth:`Count.head` of ``u`` alone; every other counter dead after the
-    loop and affine in ``u`` folded into its reads; or None."""
+class _Scope(NamedTuple):
+    """What a loop's plan may use: the variables live ``after`` it, their ``types``, and
+    those that may widen to ``int`` (``wide``)."""
+
+    after: set
+    types: dict
+    wide: set
+
+
+def _plan(counters, u, v, scope):
+    """``(rank, {w: expression of u}, u, condition, widens)`` of the loop counting ``u``
+    (its own ``v``), stepped by one, its condition :meth:`Count.head` of ``u`` alone (``u``
+    an ``int`` when ``scope`` lets it and only that keeps it from wrapping); every other
+    counter dead after the loop and affine in ``u`` folded into its reads; or None."""
     me = counters[u]
     seq, end = me.values[:-1], me.values[-1]
-    t = type_of(types.get(u), MODELS[0])
-    if len(set(seq)) != len(seq) or (
-        len(seq) > 1 and (seq[1] - seq[0]) % (1 << t.bits) not in (1, (1 << t.bits) - 1)
-    ):
+    if not _by_one(seq, type_of(scope.types.get(u), MODELS[0])):
         return None
-    fits = {}
+    fits = _fits(counters, u, seq, scope.after, scope.types)
+    if u != v and v not in fits:
+        return None
+    count = Count(u, me.count.init, me.count.step, c_ast.ID(u))
+    ts = [type_of(scope.types.get(u), b) for b in MODELS]
+    cond = count.head(seq, end, ts)
+    widen = u in scope.wide and u not in scope.after
+    got = widened(count, seq) if widen and not (cond and count.plain(cond, seq, end, ts)) else None
+    cond = cond if got is None else got
+    if cond is None:
+        return None
+    return (len(fits), cond.op != "!=", u == v), fits, u, cond, got is not None
+
+
+def _by_one(seq, t):
+    """Whether ``seq`` (of type ``t``) holds distinct values stepped by one up or down."""
+    if len(set(seq)) != len(seq):
+        return False
+    return len(seq) < 2 or (seq[1] - seq[0]) % (1 << t.bits) in (1, (1 << t.bits) - 1)
+
+
+def _fits(counters, u, seq, after, types):
+    """``{w: expression of u}`` of the counters but ``u`` (taking ``seq``) dead after the
+    loop whose values are affine in ``u``'s (:func:`_affine`)."""
+    out = {}
     for w, c in counters.items():
         if w != u and w not in after:
             e = _affine(seq, c.values[:-1], u, types.get(w), type_of(types.get(w), MODELS[0]).bits)
             if e is not None:
-                fits[w] = e
-    if u != v and v not in fits:
-        return None
-    count = Count(u, me.count.init, me.count.step, c_ast.ID(u))
-    cond = count.head(seq, end, [type_of(types.get(u), b) for b in MODELS])
-    if cond is None:
-        return None
-    return (len(fits), cond.op != "!=", u == v), fits, u, cond
+                out[w] = e
+    return out
 
 
 def _affine(us, ws, u, decl, bits):

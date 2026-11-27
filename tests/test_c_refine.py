@@ -3,8 +3,8 @@ on statement lists, and on whole functions built and run before and after reduci
 
 from pycparser import c_ast
 
-from conftest import LOCAL, behaves, deep
-from wayward_eagle.c import printer, refine, stmt
+from conftest import LOCAL, behaves, deep, reduced
+from wayward_eagle.c import refine, stmt
 from wayward_eagle.c import reduce as r
 
 INT = c_ast.TypeDecl(None, [], None, c_ast.IdentifierType(["int"]))
@@ -13,12 +13,6 @@ INT = c_ast.TypeDecl(None, [], None, c_ast.IdentifierType(["int"]))
 def body(text):
     """The reduced C of function ``f`` in ``text`` (from ``f``'s definition on)."""
     return " ".join(text[text.index("\nvoid f(") :].split())
-
-
-def reduced(cc, src, sig="void f(void)"):
-    """The rendered C of ``src``'s function reduced (not run: it may not end)."""
-    got = r.reduce_function(cc.fn(src, sig), {"trap"})
-    return " ".join(printer.render(r.prototypes(got) + got).split())
 
 
 def test_trailing_return_and_continue_are_trimmed(cc):
@@ -105,12 +99,13 @@ def test_while_loops_that_are_not_counted_stay(cc):
 
 def test_an_exit_test_before_the_step_moves_to_the_head(tmp_path):
     """``v = 2; for (;;) { ...; if (v == 0) break; v = v - 1; }``: ``v`` runs 2, 1, 0 and
-    would be 255 after another step, above them all, so the head tests ``v < 3``."""
+    would be 255 after another step: ``v`` alone mentioned there, it is an ``int`` and the
+    head tests ``v >= 0``."""
     got = behaves(
         tmp_path,
         "void f(void) { uint8_t v = 2; for (;;) { w(v); if (v == 0) break; v = v - 1; } }",
     )
-    assert "for (uint8_t v = 2; v < 3; v = v - 1) { w(v); }" in body(got)
+    assert "for (int v = 2; v >= 0; v = v - 1) { w(v); }" in body(got)
 
 
 def test_a_counter_tested_through_a_cast_keeps_its_cast(tmp_path):
@@ -223,7 +218,7 @@ def test_steps_of_other_variables_are_the_for_step(cc):
     """Steps after the exit test that store other variables dead after the loop join the
     ``for`` step; one live after it keeps the loop."""
     src = "uint8_t v = 0x62, u = 2; do { w(u); } while (v >= 0x31 && (v = v - 0x31, u = u - 2, 1));"
-    assert "for (uint8_t v = 0x62; v < 0x63; v = v - 0x31, u = u - 2)" in reduced(cc, src)
+    assert "for (int v = 0x62; v >= 0; v = v - 0x31, u = u - 2)" in reduced(cc, src)
     assert "for (;;)" in reduced(cc, src + " w(u);")
 
 
@@ -246,7 +241,7 @@ def test_a_loop_whose_tail_always_leaves_is_a_loop_then_its_tail(tmp_path):
         " if (p > 1) { w(p); break; } return; } z(); }",
     )
     assert (
-        "for (uint8_t v = 1; v < 2; v = v - 1) { x(); } y(); if (p <= 1) { return; } w(p);"
+        "for (int v = 1; v >= 0; v = v - 1) { x(); } y(); if (p <= 1) { return; } w(p);"
         " z(); }" in body(got)
     )
 

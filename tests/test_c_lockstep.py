@@ -3,7 +3,7 @@
 import pytest
 from pycparser import c_ast
 
-from conftest import LOCAL, behaves
+from conftest import LOCAL, behaves, reduced
 from wayward_eagle.c import lockstep
 
 U8 = c_ast.TypeDecl(None, [], None, c_ast.IdentifierType(["uint8_t"]))
@@ -91,10 +91,33 @@ def test_counters_promoted_past_int_stay(cc):
 )
 def test_a_wrapping_counter_behaves(tmp_path, start, stride, last, index):
     """A counter wrapping mod 256 beside one counting down to zero runs the same values
-    in the same order, the loop counting the index alone."""
+    in the same order, the loop counting the index alone, an ``int`` down to 0."""
     src = (
         f"void f(void) {{ uint8_t v = 0x{start:X}; uint8_t u = {index}; for (;;) {{ w(v); w(u);"
         f" if (v == 0x{last:X}) break; v = v - 0x{stride:X}; u = u - 1; }} }}"
     )
     got = body(behaves(tmp_path, src))
-    assert f"for (uint8_t u = {index}; u < {index + 1}; u = u - 1)" in got
+    assert f"for (int u = {index}; u >= 0; u = u - 1)" in got
+
+
+LOOP8 = "for (;;) { w(v); w(u); if (v == 0) break; v = v - 0x31; u = u - 1; }"
+
+
+@pytest.mark.parametrize(
+    "src,sig,want",
+    [
+        (f"uint8_t v = 0x62; u = 2; {LOOP8}", "void f(uint8_t u)", "u < 3"),
+        (f"uint8_t v = 0x62, u = 2; {LOOP8} w(u);", "void f(void)", "for (;;)"),
+        (f"uint8_t v = 0x62, u = 2; w(u); u = 2; {LOOP8}", "void f(void)", "u < 3"),
+        (
+            f"uint8_t v = 0x62, u = 2; {LOOP8.replace('{ w(v);', '{ w(sizeof u); w(v);')}",
+            "void f(void)",
+            "u < 3",
+        ),
+        (f"uint8_t v = 0x62, u = 2; {LOOP8}", "void f(void)", "for (int u = 2; u >= 0;"),
+    ],
+)
+def test_counters_that_keep_their_type(cc, src, sig, want):
+    """A parameter, a counter read before its last init or under ``sizeof`` keeps its type;
+    one read after the loop keeps the loop; else it widens."""
+    assert want in reduced(cc, src, sig)
