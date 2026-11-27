@@ -52,7 +52,12 @@ def _folded(graph, lst, i, types):
     plans = [p for p in plans if p is not None and p[1]]
     if not plans:
         return None
-    _, fits, u, cond = max(plans, key=lambda p: p[0])
+    return _rebuilt(lst, i, counters, max(plans, key=lambda p: p[0]))
+
+
+def _rebuilt(lst, i, counters, plan):
+    """List ``lst`` with its loop ``i`` (of ``counters``) counting as ``plan`` has it."""
+    st, (_, fits, u, cond) = lst[i], plan
     keep = [counters[w].count.step for w in counters if w not in fits]
     body = exprs_replaced(block(st.stmt), lambda n: fits.get(n.name) if _read(n) else None)
     init = st.init if counters[u].at is None else lst[counters[u].at]
