@@ -680,8 +680,8 @@ def reduce_function(
     taken=frozenset(),
     outer=None,
     *,
-    carries=False,
-    recut=False,
+    carries=True,
+    recut=True,
 ):
     """``[FuncDef]`` of C function ``fd`` rewritten (:func:`reduced`): the functions it is cut
     into (each ``static``, none named as in ``taken``) first, ``fd``'s own last; ``[fd]`` when
@@ -965,7 +965,7 @@ def prototypes(functions):
     return [f.decl for f in functions[:-1] if "static" in f.decl.storage]
 
 
-def reduce_unit(unit, status=None, functions=None, carries=False, recut=False):
+def reduce_unit(unit, status=None, functions=None, carries=True, recut=True):
     """The C text of :class:`~wayward_eagle.c.Unit` ``unit`` with each function definition
     (of the names ``functions``, all when None) reduced (:func:`reduce_function`, with
     ``carries`` and ``recut``) in place, the rest of the file as written."""
