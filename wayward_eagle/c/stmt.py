@@ -460,6 +460,15 @@ def spliced(items, f):
     return out
 
 
+def exprs_replaced(items, f):
+    """``items`` with each node of their expressions for which ``f`` gives one replaced."""
+
+    def fix(_lst, _i, st):
+        return rehead(st, [q.replaced(e, f) for e in heads(st)])
+
+    return remap(items, fix)
+
+
 def remap(items, f):
     """``items`` with each statement ``st`` at ``(list, index)`` replaced by
     ``f(list, index, st)``, its nested lists remapped first."""

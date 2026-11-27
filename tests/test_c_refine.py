@@ -105,12 +105,12 @@ def test_while_loops_that_are_not_counted_stay(cc):
 
 def test_an_exit_test_before_the_step_moves_to_the_head(tmp_path):
     """``v = 2; for (;;) { ...; if (v == 0) break; v = v - 1; }``: ``v`` runs 2, 1, 0 and
-    would be 255 after another step, so the head tests ``v != 0xFF``."""
+    would be 255 after another step, above them all, so the head tests ``v < 3``."""
     got = behaves(
         tmp_path,
         "void f(void) { uint8_t v = 2; for (;;) { w(v); if (v == 0) break; v = v - 1; } }",
     )
-    assert "for (uint8_t v = 2; v != 0xFF; v = v - 1) { w(v); }" in body(got)
+    assert "for (uint8_t v = 2; v < 3; v = v - 1) { w(v); }" in body(got)
 
 
 def test_a_counter_tested_through_a_cast_keeps_its_cast(tmp_path):
@@ -142,7 +142,7 @@ def test_a_counter_read_after_the_loop_gets_its_last_value(tmp_path):
         tmp_path,
         "void f(void) { uint8_t v = 2; for (;;) { w(v); if (v == 0) break; v = v - 1; } w(v); }",
     )
-    assert "for (uint8_t v = 2; v != 0xFF; v = v - 1) { w(v); } w(0); }" in body(got)
+    assert "for (uint8_t v = 2; v < 3; v = v - 1) { w(v); } w(0); }" in body(got)
 
 
 def test_loops_that_do_not_rotate_stay(cc):
@@ -222,8 +222,8 @@ def test_extracted_names_avoid_names_taken(cc):
 def test_steps_of_other_variables_are_the_for_step(cc):
     """Steps after the exit test that store other variables dead after the loop join the
     ``for`` step; one live after it keeps the loop."""
-    src = "uint8_t v = 0x62, u = 2; do { w(u); } while (v >= 0x31 && (v = v - 0x31, u = u - 1, 1));"
-    assert "for (uint8_t v = 0x62; v != 0xCF; v = v - 0x31, u = u - 1)" in reduced(cc, src)
+    src = "uint8_t v = 0x62, u = 2; do { w(u); } while (v >= 0x31 && (v = v - 0x31, u = u - 2, 1));"
+    assert "for (uint8_t v = 0x62; v < 0x63; v = v - 0x31, u = u - 2)" in reduced(cc, src)
     assert "for (;;)" in reduced(cc, src + " w(u);")
 
 
@@ -246,7 +246,7 @@ def test_a_loop_whose_tail_always_leaves_is_a_loop_then_its_tail(tmp_path):
         " if (p > 1) { w(p); break; } return; } z(); }",
     )
     assert (
-        "for (uint8_t v = 1; v != 0xFF; v = v - 1) { x(); } y(); if (p <= 1) { return; } w(p);"
+        "for (uint8_t v = 1; v < 2; v = v - 1) { x(); } y(); if (p <= 1) { return; } w(p);"
         " z(); }" in body(got)
     )
 

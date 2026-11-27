@@ -40,8 +40,10 @@ from .query import (
 )
 from .reduce import THRESHOLD, declarators, prototypes, reduce_function, reduce_unit
 from .printer import Generator, format_c, render, text
+from .shifts import HELPERS, helpers
 
 __all__ = [
+    "HELPERS",
     "HOST",
     "NARROW",
     "THRESHOLD",
@@ -65,6 +67,7 @@ __all__ = [
     "dump",
     "equal",
     "format_c",
+    "helpers",
     "jumps",
     "key",
     "kids",

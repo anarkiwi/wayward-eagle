@@ -70,12 +70,14 @@ a comparison in `x`, with a literal, over the values `f(v0) .. f(vm), f(e)`:
 
 - when they strictly rise: `f < f(e)` and `f <= f(vm)`; when they strictly fall: `f > f(e)` and
   `f >= f(vm)` (an ordered comparison only when the sequence is monotone without wrapping);
+- when `f(e)` lies above them all: `f < max + 1` and `f <= max`; below them all: `f > min - 1`
+  and `f >= min` (a count down to 0 wrapping to the type's top);
 - `f != f(e)` when `f(e)` is none of the others.
 
 Each candidate is checked by evaluation, and the one kept prefers, in order: a literal that
 appears in `x`, an ordered comparison over `!=`, `v` over another side, a strict comparison.
 So `v = 2; for (;;) { ..; if (v == 0) break; v = v - 1; }` over a `uint8_t` gives
-`v != 0xFF`, and `do { .. } while ((int8_t)v > 0 && (v = v - 1, 1))` from 2 gives
+`v < 3`, and `do { .. } while ((int8_t)v > 0 && (v = v - 1, 1))` from 2 gives
 `(int8_t)v >= 0`.
 
 When no candidate exists (the values wrap to one already taken: `v = 0`, step 2, exit at
@@ -99,6 +101,20 @@ A whole function is prepared and finished thus:
 - a function whose locals cannot move between functions (`static`, an array, an initializer
   list, its address taken, one name of two types), or holding a computed `goto`, is left as
   it is.
+
+`lockstep.lockstepped` then folds a `for` loop's counters into one. The loop's init sets the
+variable its condition reads alone; each of two or more steps stores one variable from itself
+and constants; the body stores and addresses none of them; each other counter's last mention
+before the loop sets it to a constant (`counted`'s rule). Every counter's type promotes to
+`int` in both models. The body's run count comes from the condition's counter as above, and
+each counter's values over those runs are evaluated in both models, which must agree. A
+counter `u` stepping by one with distinct values is the loop's counter; each other one dead
+after the loop whose values are `a + b * u` over the runs (`b` from the first two) is read as
+that, cast to its type unless every value needs no wrapping. The head is `u`'s, chosen as above
+from `u` alone. Of the choices of `u`, the one folding the most counters wins, then an ordered
+head over `!=`, then the loop's own counter. So
+`v2 = 2; for (v1 = 0x62; v1 != 0xCF; v1 = v1 - 0x31, v2 = v2 - 1)` gives
+`for (v2 = 2; v2 < 3; v2 = v2 - 1)`, reading `0x31 * v2` for `v1`.
 
 ### Finishing
 
@@ -134,6 +150,15 @@ reachability):
     cognitive complexity does not rise;
 
   repeated until none applies (one fold may open another, folding a chain into its end);
+- *arithmetic shifts* (`wayward_eagle.c.shifts`): under an `if` whose condition reads one
+  `uint8_t` variable `x` alone and holds exactly when its top bit is set (or exactly when it
+  is clear), checked over all 256 values in both models, with `x` stored in neither arm and
+  never addressed, the negative arm's `(x >> n) ^ M` or `(x >> n) | M` (`n` from 1 to 7, `M`
+  the top `n` bits) is `asr8(x, n)`, and then so is the other arm's `x >> n`. An arm ending in
+  a jump with no `else` has the statements after the `if` as its other arm. `HELPERS` holds
+  `asr8`'s definition (the 6502's `EOR #$FF; LSR; EOR #$FF`) and `helpers(functions)` names
+  those a function's pieces call; `reduce_unit` writes each before the first function calling
+  it, and a caller of `reduce_function` must do the same;
 - *carry chains as sums* (`wayward_eagle.c.carry`, unless `carries=False`), in each piece after
   it is finished, then temporaries folded again; each over locals typed `uint8_t` that one
   piece alone mentions and none takes, and kept only where it lowers the piece's cognitive
