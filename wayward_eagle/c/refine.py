@@ -482,8 +482,15 @@ class Count(NamedTuple):
             for op, k in _candidates(vals) if None not in vals else ():
                 cond = c_ast.BinaryOp(op, f, constant(k))
                 if [self.values(cond, x, types) for x in seq + [end]] == want:
-                    found.append(((k not in consts, op == "!=", rank > 0, len(op) > 1), cond))
+                    key = (k not in consts, op == "!=", k < 0, rank > 0, len(op) > 1)
+                    found.append((key, cond))
         return min(found, key=lambda x: x[0])[1] if found else None
+
+    def plain(self, cond, seq, end, types):
+        """Whether head ``cond`` compares a side whose values over ``seq`` then ``end``
+        (:func:`plain`) rise or fall."""
+        vals = [self.values(cond.left, x, types) for x in seq + [end]]
+        return None not in vals and cond.op != "!=" and plain(vals[:-1], vals[-1])
 
     def values(self, e, x, types):
         """The value of ``e`` with ``v`` at ``x`` (of ``types``, one per model), None unless
@@ -492,6 +499,24 @@ class Count(NamedTuple):
         if None in got or len({g[0] for g in got}) != 1:
             return None
         return got[0][0]
+
+
+def plain(seq, end):
+    """Whether ``seq`` then ``end`` strictly rise or strictly fall."""
+    pairs = list(zip(seq + [end], seq[1:] + [end]))
+    return all(a < b for a, b in pairs) or all(a > b for a, b in pairs)
+
+
+def widened(count, seq):
+    """:meth:`Count.head` of ``count`` over ``int`` (in each model), when stepping it there
+    gives ``seq`` and then a value they all rise or fall to; else None."""
+    wide = [Int(b, True) for b in MODELS]
+    runs = [[count.stepped(x, w, b) for x in seq] for b, w in zip(MODELS, wide)]
+    if None in runs[0] or runs[0] != runs[1] or runs[0][:-1] != seq[1:]:
+        return None
+    if not plain(seq, runs[0][-1]):
+        return None
+    return count.head(seq, runs[0][-1], wide)
 
 
 def _candidates(vals):
@@ -586,7 +611,8 @@ class Rotation:
     def _plan(self, count, alone):
         """``(head condition, last value)`` of ``count``, its values the same in each model
         (as many as with a 16-bit ``int``), or None; its variable widened to ``int`` when
-        ``alone`` (mentioned by nothing else) and only that gives a condition."""
+        ``alone`` (mentioned by nothing else) and only that gives a condition or one that does
+        not wrap."""
         types = [type_of(self.types.get(count.v), b) for b in MODELS]
         first = count.sequence(types[0], MODELS[0])
         if first is None or count.sequence(types[1], MODELS[1], len(first[0])) != first:
@@ -600,6 +626,15 @@ class Rotation:
                 cond = count.head(seq, runs[0][1], wide)
                 if cond is not None:
                     self.types[count.v] = INT
+        elif (
+            not count.plain(cond, seq, end, types)
+            and self.widen
+            and alone
+            and all(map(_widens, types, MODELS))
+        ):
+            got = widened(count, seq)
+            if got is not None:
+                cond, self.types[count.v] = got, INT
         return None if cond is None else (cond, seq[-1])
 
 

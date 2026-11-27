@@ -75,17 +75,19 @@ a comparison in `x`, with a literal, over the values `f(v0) .. f(vm), f(e)`:
 - `f != f(e)` when `f(e)` is none of the others.
 
 Each candidate is checked by evaluation, and the one kept prefers, in order: a literal that
-appears in `x`, an ordered comparison over `!=`, `v` over another side, a strict comparison.
+appears in `x`, an ordered comparison over `!=`, a literal not below zero, `v` over another
+side, a strict comparison.
 So `v = 2; for (;;) { ..; if (v == 0) break; v = v - 1; }` over a `uint8_t` gives
-`v < 3`, and `do { .. } while ((int8_t)v > 0 && (v = v - 1, 1))` from 2 gives
-`(int8_t)v >= 0`.
+`v < 3` after extraction (and `int` below before it), and
+`do { .. } while ((int8_t)v > 0 && (v = v - 1, 1))` from 2 gives `(int8_t)v >= 0` there.
 
 When no candidate exists (the values wrap to one already taken: `v = 0`, step 2, exit at
-`0xFE`) and, before extraction, nothing but the loop and its init mentions `v`, it is dead
+`0xFE`), or the values with `e` neither rise nor fall (a count down to 0 wrapping to the
+top), and, before extraction, nothing but the loop and its init mentions `v`, it is dead
 after the loop, never under `sizeof`, and its type promotes to `int` in both models, `v` is
 declared `int`: each read gives the value it gave (the promoted one), and the sequence,
 recomputed in `int`, must hold the same values; the head then tests the unwrapped values
-(`v <= 0xFE`).
+(`v <= 0xFE`, or `v >= 0` from 2 down), and where one existed must then rise or fall.
 
 ## Preparing and finishing
 
@@ -111,10 +113,12 @@ each counter's values over those runs are evaluated in both models, which must a
 counter `u` stepping by one with distinct values is the loop's counter; each other one dead
 after the loop whose values are `a + b * u` over the runs (`b` from the first two) is read as
 that, cast to its type unless every value needs no wrapping. The head is `u`'s, chosen as above
-from `u` alone. Of the choices of `u`, the one folding the most counters wins, then an ordered
+from `u` alone; before extraction, `u` is declared `int` when that alone keeps the head from
+wrapping and the widening rule above holds of it (no parameter). Of the choices of `u`, the
+one folding the most counters wins, then an ordered
 head over `!=`, then the loop's own counter. So
 `v2 = 2; for (v1 = 0x62; v1 != 0xCF; v1 = v1 - 0x31, v2 = v2 - 1)` gives
-`for (v2 = 2; v2 < 3; v2 = v2 - 1)`, reading `0x31 * v2` for `v1`.
+`for (int v2 = 2; v2 >= 0; v2 = v2 - 1)`, reading `0x31 * v2` for `v1`.
 
 ### Finishing
 
